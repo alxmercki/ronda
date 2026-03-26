@@ -1739,15 +1739,21 @@ function NewsletterModal({ savedArts, onClose }) {
         setSent(true);
       }
     } else if (emailApp === 'gmail') {
-      // Gmail web compose
+      // Gmail web compose — include formatted body in URL + HTML in clipboard
       await copyHtmlToClipboard(body, plainTxt);
-      const gmailUrl = `https://mail.google.com/mail/?view=cm&to=${encodeURIComponent(toAddr)}&su=${encodeURIComponent(subject)}`;
+      const gmailBody = `Forbes Daily\n${new Date().toLocaleDateString('pt-BR', { weekday:'long', day:'2-digit', month:'long', year:'numeric' })}\n\nConfira os destaques selecionados para hoje:\n\n` +
+        selectedArts.map((a, i) => `${i+1}. ${a.title}${a.description ? '\n   ' + a.description.slice(0,120) : ''}\n   ${a.source ? a.source + ' · ' : ''}${a.link}`).join('\n\n') +
+        `\n\n—\nForbes Daily · ${selectedArts.length} matéria${selectedArts.length !== 1 ? 's' : ''} selecionada${selectedArts.length !== 1 ? 's' : ''}`;
+      const gmailUrl = `https://mail.google.com/mail/?view=cm&to=${encodeURIComponent(toAddr)}&su=${encodeURIComponent(subject)}&body=${encodeURIComponent(gmailBody)}`;
       window.open(gmailUrl, '_blank');
       setSent(true);
     } else if (emailApp === 'outlook') {
-      // Outlook web compose
+      // Outlook web compose — include formatted body in URL + HTML in clipboard
       await copyHtmlToClipboard(body, plainTxt);
-      const outlookUrl = `https://outlook.office.com/mail/deeplink/compose?to=${encodeURIComponent(toAddr)}&subject=${encodeURIComponent(subject)}`;
+      const outlookBody = `Forbes Daily\n${new Date().toLocaleDateString('pt-BR', { weekday:'long', day:'2-digit', month:'long', year:'numeric' })}\n\nConfira os destaques selecionados para hoje:\n\n` +
+        selectedArts.map((a, i) => `${i+1}. ${a.title}${a.description ? '\n   ' + a.description.slice(0,120) : ''}\n   ${a.source ? a.source + ' · ' : ''}${a.link}`).join('\n\n') +
+        `\n\n—\nForbes Daily · ${selectedArts.length} matéria${selectedArts.length !== 1 ? 's' : ''} selecionada${selectedArts.length !== 1 ? 's' : ''}`;
+      const outlookUrl = `https://outlook.office.com/mail/deeplink/compose?to=${encodeURIComponent(toAddr)}&subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(outlookBody)}`;
       window.open(outlookUrl, '_blank');
       setSent(true);
     }
@@ -1757,8 +1763,8 @@ function NewsletterModal({ savedArts, onClose }) {
 
   const sentMessages = {
     mail:    { title: 'Mail aberto!', desc: 'O e-mail foi aberto no Mail com o conteúdo da newsletter.' },
-    gmail:   { title: 'Gmail aberto!', desc: 'O Gmail foi aberto no navegador com destinatário e assunto preenchidos. Cole o conteúdo (⌘V) no corpo do e-mail.' },
-    outlook: { title: 'Outlook aberto!', desc: 'O Outlook foi aberto no navegador com destinatário e assunto preenchidos. Cole o conteúdo (⌘V) no corpo do e-mail.' },
+    gmail:   { title: 'Gmail aberto!', desc: 'O Gmail foi aberto com destinatário, assunto e corpo preenchidos. Para a versão formatada (HTML), selecione tudo no corpo (⌘A), cole (⌘V) e envie.' },
+    outlook: { title: 'Outlook aberto!', desc: 'O Outlook foi aberto com destinatário, assunto e corpo preenchidos. Para a versão formatada (HTML), selecione tudo no corpo (⌘A), cole (⌘V) e envie.' },
   };
 
   if (sent) return html`
