@@ -735,6 +735,8 @@ const Ico = {
   download:() => html`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="w-4 h-4"><path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3"/></svg>`,
   upload:  () => html`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="w-4 h-4"><path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5"/></svg>`,
   check:   () => html`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" class="w-3.5 h-3.5"><path stroke-linecap="round" stroke-linejoin="round" d="M4.5 12.75l6 6 9-13.5"/></svg>`,
+  mail:    () => html`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="w-4 h-4"><path stroke-linecap="round" stroke-linejoin="round" d="M21.75 6.75v10.5a2.25 2.25 0 01-2.25 2.25h-15a2.25 2.25 0 01-2.25-2.25V6.75m19.5 0A2.25 2.25 0 0019.5 4.5h-15a2.25 2.25 0 00-2.25 2.25m19.5 0v.243a2.25 2.25 0 01-1.07 1.916l-7.5 4.615a2.25 2.25 0 01-2.36 0L3.32 8.91a2.25 2.25 0 01-1.07-1.916V6.75"/></svg>`,
+  send:    () => html`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="w-4 h-4"><path stroke-linecap="round" stroke-linejoin="round" d="M6 12L3.269 3.126A59.768 59.768 0 0121.485 12 59.77 59.77 0 013.27 20.876L5.999 12zm0 0h7.5"/></svg>`,
 };
 
 // ─────────────────────────────────────────────
@@ -1611,7 +1613,227 @@ function WebSearch({ states, onToggle, sources = [], activeSourceId, onSelectSou
 
 // ── SAVED ARTICLES HISTORY ────────────────────
 
-function SavedArticles({ savedArts, onRemove }) {
+// ── NEWSLETTER GENERATOR ──────────────────────
+function generateNewsletterHtml(articles) {
+  const today = new Date();
+  const dateStr = today.toLocaleDateString('pt-BR', { weekday: 'long', day: '2-digit', month: 'long', year: 'numeric' });
+  const items = articles.map(art => {
+    const pub = art.pubDate ? new Date(art.pubDate) : null;
+    const pubStr = pub && !isNaN(pub) ? pub.toLocaleDateString('pt-BR', { day:'2-digit', month:'short', year:'numeric' }) : '';
+    return `
+      <tr><td style="padding:0 0 24px 0;">
+        <table width="100%" cellpadding="0" cellspacing="0" style="border-bottom:1px solid #e5e7eb;padding-bottom:20px;">
+          <tr><td>
+            <a href="${art.link}" style="color:#111827;font-size:16px;font-weight:600;text-decoration:none;line-height:1.4;" target="_blank">${art.title}</a>
+          </td></tr>
+          ${art.description ? `<tr><td style="padding-top:6px;color:#6b7280;font-size:14px;line-height:1.5;">${art.description}</td></tr>` : ''}
+          <tr><td style="padding-top:8px;font-size:12px;color:#9ca3af;">
+            ${art.source ? `<span style="color:#6b7280;font-weight:500;">${art.source}</span>` : ''}
+            ${pubStr ? ` · ${pubStr}` : ''}
+            ${art.link ? ` · <a href="${art.link}" style="color:#2563eb;text-decoration:none;" target="_blank">Ler matéria →</a>` : ''}
+          </td></tr>
+        </table>
+      </td></tr>`;
+  }).join('');
+
+  return `<!DOCTYPE html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
+<body style="margin:0;padding:0;background:#f3f4f6;font-family:Georgia,'Times New Roman',serif;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background:#f3f4f6;padding:32px 16px;">
+    <tr><td align="center">
+      <table width="600" cellpadding="0" cellspacing="0" style="background:#ffffff;border-radius:12px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,0.1);">
+        <!-- Header -->
+        <tr><td style="background:#111827;padding:32px 40px;text-align:center;">
+          <h1 style="margin:0;color:#ffffff;font-size:28px;font-weight:700;letter-spacing:0.5px;">Forbes Daily</h1>
+          <p style="margin:8px 0 0;color:#9ca3af;font-size:14px;">${dateStr}</p>
+        </td></tr>
+        <!-- Intro -->
+        <tr><td style="padding:28px 40px 8px;">
+          <p style="margin:0;color:#6b7280;font-size:14px;line-height:1.6;">
+            Confira os destaques selecionados para hoje:
+          </p>
+        </td></tr>
+        <!-- Articles -->
+        <tr><td style="padding:20px 40px 12px;">
+          <table width="100%" cellpadding="0" cellspacing="0">
+            ${items}
+          </table>
+        </td></tr>
+        <!-- Footer -->
+        <tr><td style="padding:20px 40px 32px;border-top:1px solid #e5e7eb;text-align:center;">
+          <p style="margin:0;color:#9ca3af;font-size:12px;">
+            Forbes Daily · Newsletter interna · ${articles.length} matéria${articles.length !== 1 ? 's' : ''} selecionada${articles.length !== 1 ? 's' : ''}
+          </p>
+        </td></tr>
+      </table>
+    </td></tr>
+  </table>
+</body></html>`;
+}
+
+function generateNewsletterSubject() {
+  const now = new Date();
+  const date = now.toLocaleDateString('pt-BR', { day:'2-digit', month:'2-digit', year:'numeric' });
+  const time = now.toLocaleTimeString('pt-BR', { hour:'2-digit', minute:'2-digit' });
+  return `Forbes Daily, ${date} ${time}`;
+}
+
+function NewsletterModal({ savedArts, onClose }) {
+  const [to, setTo]         = useState('');
+  const [selected, setSelected] = useState(() => new Set(savedArts.map(a => a.key)));
+  const [sending, setSending]   = useState(false);
+  const [sent, setSent]         = useState(false);
+  const [error, setError]       = useState('');
+
+  const toggleArt = (key) => {
+    setSelected(prev => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key); else next.add(key);
+      return next;
+    });
+  };
+
+  const selectAll   = () => setSelected(new Set(savedArts.map(a => a.key)));
+  const selectNone  = () => setSelected(new Set());
+
+  const selectedArts = useMemo(() =>
+    savedArts.filter(a => selected.has(a.key)),
+  [savedArts, selected]);
+
+  async function sendNewsletter() {
+    if (!to.trim()) { setError('Informe o destinatário.'); return; }
+    if (selectedArts.length === 0) { setError('Selecione pelo menos um artigo.'); return; }
+    setError('');
+    setSending(true);
+
+    const subject = generateNewsletterSubject();
+    const body    = generateNewsletterHtml(selectedArts);
+
+    // Native email handler (macOS app)
+    if (window.__hasNativeEmail) {
+      try {
+        await window.nativeEmail(to.trim(), subject, body);
+        setSent(true);
+      } catch (e) { setError('Erro ao abrir e-mail: ' + e.message); }
+      setSending(false);
+      return;
+    }
+
+    // Browser fallback: copy HTML to clipboard + open mailto
+    try {
+      await navigator.clipboard.write([
+        new ClipboardItem({
+          'text/html':  new Blob([body], { type: 'text/html' }),
+          'text/plain': new Blob([selectedArts.map(a => `• ${a.title}\n  ${a.link}`).join('\n\n')], { type: 'text/plain' }),
+        })
+      ]);
+    } catch (e) {
+      // Fallback: copy plain text
+      try {
+        await navigator.clipboard.writeText(selectedArts.map(a => `• ${a.title}\n  ${a.link}`).join('\n\n'));
+      } catch(e2) {}
+    }
+    window.open(`mailto:${encodeURIComponent(to.trim())}?subject=${encodeURIComponent(subject)}`, '_self');
+    setSent(true);
+    setSending(false);
+  }
+
+  if (sent) return html`
+    <div class="fixed inset-0 bg-black/40 backdrop-blur-sm z-50 flex items-center justify-center p-4"
+         onClick=${e => e.target === e.currentTarget && onClose()}>
+      <div class="bg-white rounded-2xl shadow-2xl w-full max-w-md p-8 text-center">
+        <div class="w-14 h-14 bg-green-50 rounded-2xl flex items-center justify-center mx-auto mb-4 text-green-500">
+          ${Ico.check()}
+        </div>
+        <h3 class="text-lg font-semibold text-gray-900 mb-2">Newsletter pronta!</h3>
+        <p class="text-sm text-gray-500 mb-1">O cliente de e-mail foi aberto com o assunto preenchido.</p>
+        <p class="text-sm text-gray-500 mb-6">O conteúdo HTML foi copiado para a área de transferência — cole no corpo do e-mail.</p>
+        <button onClick=${onClose}
+          class="px-6 py-2 bg-blue-600 text-white font-medium rounded-xl hover:bg-blue-700 transition-colors">
+          Fechar
+        </button>
+      </div>
+    </div>`;
+
+  return html`
+    <div class="fixed inset-0 bg-black/40 backdrop-blur-sm z-50 flex items-center justify-center p-4"
+         onClick=${e => e.target === e.currentTarget && onClose()}>
+      <div class="bg-white rounded-2xl shadow-2xl w-full max-w-lg flex flex-col max-h-[85vh]">
+        <!-- Header -->
+        <div class="flex items-center justify-between px-5 pt-5 pb-4 border-b border-gray-100">
+          <div class="flex items-center gap-2">
+            ${Ico.mail()}
+            <h2 class="text-base font-semibold text-gray-900">Forbes Daily Newsletter</h2>
+          </div>
+          <button onClick=${onClose} class="text-gray-400 hover:text-gray-600 transition-colors">${Ico.x()}</button>
+        </div>
+
+        <!-- Form -->
+        <div class="px-5 py-4 space-y-4 overflow-y-auto flex-1">
+          <!-- From -->
+          <div>
+            <label class="block text-xs font-medium text-gray-500 mb-1">De</label>
+            <input type="text" value="am@forbes.com.br" disabled
+              class="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg text-sm text-gray-500" />
+          </div>
+
+          <!-- To -->
+          <div>
+            <label class="block text-xs font-medium text-gray-500 mb-1">Para</label>
+            <input type="email" value=${to} onInput=${e => setTo(e.target.value)}
+              placeholder="destinatario@exemplo.com"
+              class="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500" />
+          </div>
+
+          <!-- Subject preview -->
+          <div>
+            <label class="block text-xs font-medium text-gray-500 mb-1">Assunto</label>
+            <input type="text" value=${generateNewsletterSubject()} disabled
+              class="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg text-sm text-gray-500" />
+          </div>
+
+          <!-- Article selection -->
+          <div>
+            <div class="flex items-center justify-between mb-2">
+              <label class="text-xs font-medium text-gray-500">Artigos (${selected.size} de ${savedArts.length})</label>
+              <div class="flex gap-2">
+                <button onClick=${selectAll}  class="text-xs text-blue-600 hover:underline">Todos</button>
+                <button onClick=${selectNone} class="text-xs text-gray-400 hover:underline">Nenhum</button>
+              </div>
+            </div>
+            <div class="space-y-1 max-h-48 overflow-y-auto border border-gray-200 rounded-lg p-2">
+              ${savedArts.map(art => html`
+                <label key=${art.key} class="flex items-start gap-2 p-2 rounded-lg hover:bg-gray-50 cursor-pointer">
+                  <input type="checkbox" checked=${selected.has(art.key)} onChange=${() => toggleArt(art.key)}
+                    class="mt-0.5 rounded border-gray-300 text-blue-600 focus:ring-blue-500" />
+                  <div class="flex-1 min-w-0">
+                    <p class="text-sm font-medium text-gray-900 line-clamp-2">${art.title}</p>
+                    <p class="text-xs text-gray-400">${art.source || ''}</p>
+                  </div>
+                </label>`)}
+            </div>
+          </div>
+
+          ${error && html`<p class="text-sm text-red-500">${error}</p>`}
+        </div>
+
+        <!-- Footer -->
+        <div class="px-5 py-4 border-t border-gray-100 flex justify-end gap-2">
+          <button onClick=${onClose}
+            class="px-4 py-2 text-sm text-gray-600 hover:bg-gray-100 rounded-lg transition-colors">
+            Cancelar
+          </button>
+          <button onClick=${sendNewsletter} disabled=${sending}
+            class="flex items-center gap-2 px-5 py-2 bg-gray-900 text-white text-sm font-medium rounded-lg hover:bg-gray-800 transition-colors disabled:opacity-50">
+            ${sending ? html`<${Spinner}/>` : Ico.send()}
+            ${sending ? 'Preparando...' : 'Enviar Newsletter'}
+          </button>
+        </div>
+      </div>
+    </div>`;
+}
+
+function SavedArticles({ savedArts, onRemove, onNewsletter }) {
   const [filter, setFilter] = useState('all'); // 'all' | 'feed' | 'web'
 
   const displayed = useMemo(() => {
@@ -1638,6 +1860,10 @@ function SavedArticles({ savedArts, onRemove }) {
           <strong class="text-gray-700">${displayed.length}</strong>
           ${displayed.length === 1 ? ' artigo salvo' : ' artigos salvos'}
         </p>
+        <button onClick=${onNewsletter}
+          class="flex items-center gap-1.5 px-3 py-1.5 bg-gray-900 text-white text-xs font-medium rounded-lg hover:bg-gray-800 transition-colors">
+          ${Ico.mail()} Forbes Daily
+        </button>
         <div class="flex gap-1 ml-auto">
           ${[['all','Todos'],['feed','Feeds'],['web','Web']].map(([v,l]) => html`
             <button key=${v} onClick=${() => setFilter(v)}
@@ -1729,6 +1955,7 @@ function App() {
   const [showAdd,       setShowAdd]      = useState(false);
   const [spinning,      setSpinning]     = useState(false);
   const [showManageCat, setShowManageCat]= useState(false);
+  const [showNewsletter, setShowNewsletter] = useState(false);
   const [categories,    setCategories]   = useState(() => S.categories.get());
   const [webSources,    setWebSources]   = useState(() => S.webSources.get());
   const [savedArts,     setSavedArts]    = useState(() => S.saved.get());
@@ -2422,6 +2649,7 @@ function App() {
           ${tab === 'saved' && html`<${SavedArticles}
             savedArts=${savedArts}
             onRemove=${removeFromSaved}
+            onNewsletter=${() => setShowNewsletter(true)}
           />`}
 
           <!-- ── BUSCA WEB TAB ── -->
@@ -2476,6 +2704,11 @@ function App() {
         categories=${categories}
         onSave=${saveCategories}
         onClose=${() => setShowManageCat(false)} />`}
+
+      <!-- ── NEWSLETTER MODAL ── -->
+      ${showNewsletter && html`<${NewsletterModal}
+        savedArts=${savedArts}
+        onClose=${() => setShowNewsletter(false)} />`}
     </div>`;
 }
 
