@@ -737,6 +737,8 @@ const Ico = {
   check:   () => html`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" class="w-3.5 h-3.5"><path stroke-linecap="round" stroke-linejoin="round" d="M4.5 12.75l6 6 9-13.5"/></svg>`,
   mail:    () => html`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="w-4 h-4"><path stroke-linecap="round" stroke-linejoin="round" d="M21.75 6.75v10.5a2.25 2.25 0 01-2.25 2.25h-15a2.25 2.25 0 01-2.25-2.25V6.75m19.5 0A2.25 2.25 0 0019.5 4.5h-15a2.25 2.25 0 00-2.25 2.25m19.5 0v.243a2.25 2.25 0 01-1.07 1.916l-7.5 4.615a2.25 2.25 0 01-2.36 0L3.32 8.91a2.25 2.25 0 01-1.07-1.916V6.75"/></svg>`,
   send:    () => html`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="w-4 h-4"><path stroke-linecap="round" stroke-linejoin="round" d="M6 12L3.269 3.126A59.768 59.768 0 0121.485 12 59.77 59.77 0 013.27 20.876L5.999 12zm0 0h7.5"/></svg>`,
+  trend:   () => html`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="w-4 h-4"><path stroke-linecap="round" stroke-linejoin="round" d="M2.25 18L9 11.25l4.306 4.307a11.95 11.95 0 015.814-5.519l2.74-1.22m0 0l-5.94-2.28m5.94 2.28l-2.28 5.941"/></svg>`,
+  play:    () => html`<svg viewBox="0 0 24 24" fill="currentColor" class="w-4 h-4"><path d="M8 5v14l11-7z"/></svg>`,
 };
 
 // ─────────────────────────────────────────────
@@ -1612,6 +1614,303 @@ function WebSearch({ states, onToggle, sources = [], activeSourceId, onSelectSou
 }
 
 // ── SAVED ARTICLES HISTORY ────────────────────
+
+// ── TRENDS COMPONENT ─────────────────────────
+
+const TREND_COUNTRIES = [
+  { code: 'BR', name: 'Brasil',          flag: '🇧🇷' },
+  { code: 'US', name: 'Estados Unidos',  flag: '🇺🇸' },
+  { code: 'AR', name: 'Argentina',       flag: '🇦🇷' },
+  { code: 'GB', name: 'Reino Unido',     flag: '🇬🇧' },
+  { code: 'DE', name: 'Alemanha',        flag: '🇩🇪' },
+  { code: 'FR', name: 'França',          flag: '🇫🇷' },
+  { code: 'JP', name: 'Japão',           flag: '🇯🇵' },
+  { code: 'CN', name: 'China',           flag: '🇨🇳' },
+  { code: 'IN', name: 'Índia',           flag: '🇮🇳' },
+  { code: 'MX', name: 'México',          flag: '🇲🇽' },
+  { code: 'ES', name: 'Espanha',         flag: '🇪🇸' },
+  { code: 'IT', name: 'Itália',          flag: '🇮🇹' },
+  { code: 'PT', name: 'Portugal',        flag: '🇵🇹' },
+  { code: 'CO', name: 'Colômbia',        flag: '🇨🇴' },
+  { code: 'CL', name: 'Chile',           flag: '🇨🇱' },
+  { code: 'AU', name: 'Austrália',       flag: '🇦🇺' },
+  { code: 'CA', name: 'Canadá',          flag: '🇨🇦' },
+  { code: 'KR', name: 'Coreia do Sul',   flag: '🇰🇷' },
+  { code: 'IL', name: 'Israel',          flag: '🇮🇱' },
+  { code: 'AE', name: 'Emirados Árabes', flag: '🇦🇪' },
+];
+
+const YT_CATEGORIES = [
+  { id: '0',  name: 'Todos' },
+  { id: '1',  name: 'Filmes' },
+  { id: '2',  name: 'Veículos' },
+  { id: '10', name: 'Música' },
+  { id: '15', name: 'Animais' },
+  { id: '17', name: 'Esportes' },
+  { id: '20', name: 'Games' },
+  { id: '22', name: 'Pessoas e Blogs' },
+  { id: '23', name: 'Comédia' },
+  { id: '24', name: 'Entretenimento' },
+  { id: '25', name: 'Notícias' },
+  { id: '26', name: 'Estilo' },
+  { id: '27', name: 'Educação' },
+  { id: '28', name: 'Ciência e Tecnologia' },
+];
+
+async function fetchGoogleTrends(geo) {
+  const url = `https://trends.google.com/trending/rss?geo=${geo}`;
+  const xml = await fetchRaw(url);
+  const doc = new DOMParser().parseFromString(xml, 'text/xml');
+  const items = doc.querySelectorAll('item');
+  const trends = [];
+  items.forEach((item, i) => {
+    const title       = item.querySelector('title')?.textContent || '';
+    const traffic     = item.querySelector('ht\\:approx_traffic, approx_traffic')?.textContent || '';
+    const description = item.querySelector('description')?.textContent || '';
+    const link        = item.querySelector('link')?.textContent || '';
+    const pubDate     = item.querySelector('pubDate')?.textContent || '';
+    // Extract news items from ht:news_item
+    const newsItems = [];
+    item.querySelectorAll('ht\\:news_item, news_item').forEach(ni => {
+      const niTitle  = ni.querySelector('ht\\:news_item_title, news_item_title')?.textContent || '';
+      const niUrl    = ni.querySelector('ht\\:news_item_url, news_item_url')?.textContent || '';
+      const niSource = ni.querySelector('ht\\:news_item_source, news_item_source')?.textContent || '';
+      if (niTitle) newsItems.push({ title: niTitle, url: niUrl, source: niSource });
+    });
+    trends.push({ rank: i + 1, title, traffic, description, link, pubDate, newsItems });
+  });
+  return trends;
+}
+
+async function fetchYouTubeTrending(regionCode, ytApiKey, categoryId) {
+  if (!ytApiKey) return [];
+  let url = `https://www.googleapis.com/youtube/v3/videos?part=snippet,statistics&chart=mostPopular&regionCode=${regionCode}&maxResults=20&key=${ytApiKey}`;
+  if (categoryId && categoryId !== '0') url += `&videoCategoryId=${categoryId}`;
+  const resp = await fetch(url);
+  if (!resp.ok) throw new Error(`YouTube API: HTTP ${resp.status}`);
+  const data = await resp.json();
+  return (data.items || []).map((v, i) => ({
+    rank:       i + 1,
+    title:      v.snippet.title,
+    channel:    v.snippet.channelTitle,
+    thumbnail:  v.snippet.thumbnails?.medium?.url || v.snippet.thumbnails?.default?.url || '',
+    views:      parseInt(v.statistics?.viewCount || '0'),
+    likes:      parseInt(v.statistics?.likeCount || '0'),
+    url:        `https://www.youtube.com/watch?v=${v.id}`,
+    publishedAt: v.snippet.publishedAt,
+    categoryId: v.snippet.categoryId,
+  }));
+}
+
+function formatNumber(n) {
+  if (n >= 1_000_000) return (n / 1_000_000).toFixed(1).replace('.0','') + 'M';
+  if (n >= 1_000) return (n / 1_000).toFixed(1).replace('.0','') + 'K';
+  return n.toString();
+}
+
+function TrendsTab() {
+  const [country, setCountry]     = useState('BR');
+  const [gTrends, setGTrends]     = useState([]);
+  const [ytTrends, setYtTrends]   = useState([]);
+  const [loadingG, setLoadingG]   = useState(false);
+  const [loadingYt, setLoadingYt] = useState(false);
+  const [errorG, setErrorG]       = useState('');
+  const [errorYt, setErrorYt]     = useState('');
+  const [ytApiKey, setYtApiKey]   = useState(() => localStorage.getItem('ronda_yt_apikey') || '');
+  const [showKeyInput, setShowKeyInput] = useState(false);
+  const [ytCategory, setYtCategory] = useState('0');
+  const [section, setSection]     = useState('google'); // 'google' | 'youtube'
+
+  function saveYtKey(key) {
+    setYtApiKey(key);
+    localStorage.setItem('ronda_yt_apikey', key);
+  }
+
+  async function loadGoogleTrends() {
+    setLoadingG(true); setErrorG('');
+    try {
+      const data = await fetchGoogleTrends(country);
+      setGTrends(data);
+    } catch (e) { setErrorG(e.message); }
+    setLoadingG(false);
+  }
+
+  async function loadYouTubeTrends() {
+    if (!ytApiKey) { setShowKeyInput(true); return; }
+    setLoadingYt(true); setErrorYt('');
+    try {
+      const data = await fetchYouTubeTrending(country, ytApiKey, ytCategory);
+      setYtTrends(data);
+    } catch (e) { setErrorYt(e.message); }
+    setLoadingYt(false);
+  }
+
+  // Auto-load on country/category change
+  useEffect(() => { loadGoogleTrends(); }, [country]);
+  useEffect(() => { if (ytApiKey && section === 'youtube') loadYouTubeTrends(); }, [country, ytCategory]);
+
+  const countryObj = TREND_COUNTRIES.find(c => c.code === country);
+
+  return html`
+    <div>
+      <!-- Header bar -->
+      <div class="bg-white rounded-xl border border-gray-200 p-3 mb-4">
+        <div class="flex items-center gap-3 flex-wrap">
+          <!-- Country selector -->
+          <div class="flex items-center gap-2">
+            <span class="text-lg">${countryObj?.flag || '🌍'}</span>
+            <select value=${country} onChange=${e => setCountry(e.target.value)}
+              class="text-sm px-2 py-1.5 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white font-medium">
+              ${TREND_COUNTRIES.map(c => html`<option key=${c.code} value=${c.code}>${c.flag} ${c.name}</option>`)}
+            </select>
+          </div>
+
+          <!-- Section toggle -->
+          <div class="flex gap-1 bg-gray-100 p-0.5 rounded-lg">
+            <button onClick=${() => setSection('google')}
+              class="px-3 py-1.5 rounded-md text-xs font-medium transition-colors flex items-center gap-1.5
+                ${section === 'google' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'}">
+              ${Ico.trend()} Google
+            </button>
+            <button onClick=${() => { setSection('youtube'); if (ytApiKey && ytTrends.length === 0) loadYouTubeTrends(); }}
+              class="px-3 py-1.5 rounded-md text-xs font-medium transition-colors flex items-center gap-1.5
+                ${section === 'youtube' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'}">
+              ${Ico.play()} YouTube
+            </button>
+          </div>
+
+          <!-- YouTube category filter -->
+          ${section === 'youtube' && html`
+            <select value=${ytCategory} onChange=${e => { setYtCategory(e.target.value); }}
+              class="text-xs px-2 py-1.5 border border-gray-300 rounded-lg focus:outline-none bg-white">
+              ${YT_CATEGORIES.map(c => html`<option key=${c.id} value=${c.id}>${c.name}</option>`)}
+            </select>`}
+
+          <!-- Refresh / YT API key -->
+          <div class="ml-auto flex items-center gap-2">
+            ${section === 'youtube' && html`
+              <button onClick=${() => setShowKeyInput(!showKeyInput)}
+                title="Configurar API Key do YouTube"
+                class="p-1.5 text-gray-400 hover:text-gray-700 hover:bg-gray-100 rounded-lg transition-colors">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="w-4 h-4">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M15.75 5.25a3 3 0 013 3m3 0a6 6 0 01-7.029 5.912c-.563-.097-1.159.026-1.563.43L10.5 17.25H8.25v2.25H6v2.25H2.25v-2.818c0-.597.237-1.17.659-1.591l6.499-6.499c.404-.404.527-1 .43-1.563A6 6 0 1121.75 8.25z"/>
+                </svg>
+              </button>`}
+            <button onClick=${() => section === 'google' ? loadGoogleTrends() : loadYouTubeTrends()}
+              disabled=${loadingG || loadingYt}
+              class="flex items-center gap-1.5 px-3 py-1.5 text-sm text-gray-600 hover:text-gray-900 hover:bg-gray-100 rounded-lg transition-colors disabled:opacity-40">
+              ${Ico.refresh(loadingG || loadingYt)}
+              <span class="hidden sm:inline">Atualizar</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- YouTube API key input -->
+        ${showKeyInput && html`
+          <div class="mt-3 pt-3 border-t border-gray-100">
+            <div class="flex items-center gap-2">
+              <input type="text" value=${ytApiKey}
+                onInput=${e => saveYtKey(e.target.value)}
+                placeholder="Cole sua YouTube Data API v3 key aqui"
+                class="flex-1 px-3 py-2 border border-gray-300 rounded-lg text-xs focus:outline-none focus:ring-2 focus:ring-blue-500" />
+              <button onClick=${() => { setShowKeyInput(false); if (ytApiKey) loadYouTubeTrends(); }}
+                class="px-3 py-2 bg-blue-600 text-white text-xs font-medium rounded-lg hover:bg-blue-700">OK</button>
+            </div>
+            <p class="text-xs text-gray-400 mt-1.5">
+              Obtenha grátis em <a href="https://console.cloud.google.com/apis/credentials" target="_blank" class="text-blue-500 hover:underline">console.cloud.google.com</a>
+              → Ative "YouTube Data API v3" → Crie uma API Key
+            </p>
+          </div>`}
+      </div>
+
+      <!-- ── GOOGLE TRENDS ── -->
+      ${section === 'google' && html`<div>
+        ${errorG && html`<div class="bg-red-50 border border-red-200 text-red-600 text-sm rounded-xl p-3 mb-4">${errorG}</div>`}
+        ${loadingG ? html`<${Skeleton}/>` : gTrends.length === 0 ? html`
+          <div class="text-center py-16 text-gray-400 text-sm">Nenhuma tendência encontrada. Clique em Atualizar.</div>`
+        : html`
+          <div class="space-y-3">
+            ${gTrends.map(t => html`
+              <div key=${t.rank} class="bg-white rounded-xl border border-gray-200 hover:border-blue-200 p-4 transition-all">
+                <div class="flex items-start gap-3">
+                  <span class="flex-shrink-0 w-8 h-8 rounded-lg flex items-center justify-center text-sm font-bold
+                    ${t.rank <= 3 ? 'bg-blue-600 text-white' : t.rank <= 10 ? 'bg-blue-100 text-blue-700' : 'bg-gray-100 text-gray-500'}">
+                    ${t.rank}
+                  </span>
+                  <div class="flex-1 min-w-0">
+                    <div class="flex items-center gap-2 mb-1">
+                      <a href=${t.link} target="_blank" rel="noopener noreferrer"
+                        class="text-sm font-semibold text-gray-900 hover:text-blue-600 transition-colors">
+                        ${t.title}
+                      </a>
+                      ${t.traffic && html`
+                        <span class="text-xs px-1.5 py-0.5 bg-green-50 text-green-600 rounded-full font-medium flex-shrink-0">
+                          ${t.traffic} buscas
+                        </span>`}
+                    </div>
+                    ${t.newsItems.length > 0 && html`
+                      <div class="space-y-1.5 mt-2">
+                        ${t.newsItems.slice(0, 3).map((ni, i) => html`
+                          <a key=${i} href=${ni.url} target="_blank" rel="noopener noreferrer"
+                            class="flex items-center gap-2 text-xs text-gray-500 hover:text-blue-600 transition-colors">
+                            <span class="w-1 h-1 bg-gray-300 rounded-full flex-shrink-0"></span>
+                            <span class="line-clamp-1">${ni.title}</span>
+                            ${ni.source && html`<span class="text-gray-300 flex-shrink-0">— ${ni.source}</span>`}
+                          </a>`)}
+                      </div>`}
+                  </div>
+                </div>
+              </div>`)}
+          </div>`}
+      </div>`}
+
+      <!-- ── YOUTUBE TRENDING ── -->
+      ${section === 'youtube' && html`<div>
+        ${!ytApiKey && !showKeyInput ? html`
+          <div class="text-center py-16">
+            <div class="w-14 h-14 bg-red-50 rounded-2xl flex items-center justify-center mx-auto mb-4 text-red-400">
+              ${Ico.play()}
+            </div>
+            <h3 class="text-base font-semibold text-gray-900 mb-2">YouTube Trending</h3>
+            <p class="text-xs text-gray-400 max-w-xs mx-auto mb-4">
+              Para ver os vídeos em alta, é necessário uma chave da YouTube Data API (gratuita).
+            </p>
+            <button onClick=${() => setShowKeyInput(true)}
+              class="px-4 py-2 bg-red-600 text-white text-sm font-medium rounded-xl hover:bg-red-700 transition-colors">
+              Configurar API Key
+            </button>
+          </div>`
+        : html`<div>
+          ${errorYt && html`<div class="bg-red-50 border border-red-200 text-red-600 text-sm rounded-xl p-3 mb-4">${errorYt}</div>`}
+          ${loadingYt ? html`<${Skeleton}/>` : ytTrends.length === 0 ? html`
+            <div class="text-center py-16 text-gray-400 text-sm">Clique em Atualizar para carregar os vídeos em alta.</div>`
+          : html`
+            <div class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
+              ${ytTrends.map(v => html`
+                <a key=${v.rank} href=${v.url} target="_blank" rel="noopener noreferrer"
+                  class="bg-white rounded-xl border border-gray-200 hover:border-red-200 hover:shadow-md transition-all overflow-hidden group">
+                  <div class="relative">
+                    <img src=${v.thumbnail} alt="" class="w-full h-36 object-cover" loading="lazy" />
+                    <span class="absolute top-2 left-2 bg-black/70 text-white text-xs font-bold w-6 h-6 rounded-lg flex items-center justify-center">
+                      ${v.rank}
+                    </span>
+                  </div>
+                  <div class="p-3">
+                    <h3 class="text-sm font-semibold text-gray-900 group-hover:text-red-600 transition-colors line-clamp-2 mb-1.5">
+                      ${v.title}
+                    </h3>
+                    <p class="text-xs text-gray-500 mb-1">${v.channel}</p>
+                    <div class="flex items-center gap-3 text-xs text-gray-400">
+                      <span>${formatNumber(v.views)} views</span>
+                      ${v.likes > 0 && html`<span>👍 ${formatNumber(v.likes)}</span>`}
+                    </div>
+                  </div>
+                </a>`)}
+            </div>`}
+        </div>`}
+      </div>`}
+    </div>`;
+}
 
 // ── NEWSLETTER GENERATOR ──────────────────────
 function generateNewsletterHtml(articles) {
@@ -2561,10 +2860,11 @@ function App() {
 
           <!-- Tabs -->
           <div class="flex gap-1 mb-4 bg-white rounded-xl border border-gray-200 p-1 w-fit">
-            ${[['articles','Artigos'],['websearch','Busca Web'],['saved','Salvos'],['suggestions','Sugestões']].map(([t,l]) => html`
+            ${[['articles','Artigos'],['websearch','Busca Web'],['trends','Tendências'],['saved','Salvos'],['suggestions','Sugestões']].map(([t,l]) => html`
               <button key=${t} onClick=${() => setTab(t)}
                 class="px-4 py-1.5 rounded-lg text-sm font-medium transition-colors flex items-center gap-1.5 ${tab===t ? 'bg-blue-600 text-white shadow-sm' : 'text-gray-600 hover:text-gray-900'}">
                 ${t==='websearch' ? html`${Ico.globe()}<span>${l}</span>`
+                  : t==='trends' ? html`${Ico.trend()}<span>${l}</span>`
                   : t==='saved' ? html`${Ico.mark(false)}<span>${l}</span>`
                   : l}
                 ${t==='saved' && savedArts.length>0 && html`<span class="bg-amber-400 text-white text-xs w-4 h-4 rounded-full flex items-center justify-center">${savedArts.length}</span>`}
@@ -2698,6 +2998,9 @@ function App() {
             onRemove=${removeFromSaved}
             onNewsletter=${() => setShowNewsletter(true)}
           />`}
+
+          <!-- ── TENDÊNCIAS TAB ── -->
+          ${tab === 'trends' && html`<${TrendsTab}/>`}
 
           <!-- ── BUSCA WEB TAB ── -->
           ${tab === 'websearch' && html`<${WebSearch}
