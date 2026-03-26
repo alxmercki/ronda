@@ -1680,6 +1680,7 @@ function generateNewsletterSubject() {
 
 function NewsletterModal({ savedArts, onClose }) {
   const [to, setTo]         = useState('');
+  const [emailApp, setEmailApp] = useState('mail'); // 'mail' | 'gmail' | 'outlook'
   const [selected, setSelected] = useState(() => new Set(savedArts.map(a => a.key)));
   const [sending, setSending]   = useState(false);
   const [sent, setSent]         = useState(false);
@@ -1700,43 +1701,65 @@ function NewsletterModal({ savedArts, onClose }) {
     savedArts.filter(a => selected.has(a.key)),
   [savedArts, selected]);
 
+  async function copyHtmlToClipboard(htmlContent, plainText) {
+    try {
+      await navigator.clipboard.write([
+        new ClipboardItem({
+          'text/html':  new Blob([htmlContent], { type: 'text/html' }),
+          'text/plain': new Blob([plainText], { type: 'text/plain' }),
+        })
+      ]);
+    } catch (e) {
+      try { await navigator.clipboard.writeText(plainText); } catch(e2) {}
+    }
+  }
+
   async function sendNewsletter() {
     if (!to.trim()) { setError('Informe o destinatário.'); return; }
     if (selectedArts.length === 0) { setError('Selecione pelo menos um artigo.'); return; }
     setError('');
     setSending(true);
 
-    const subject = generateNewsletterSubject();
-    const body    = generateNewsletterHtml(selectedArts);
+    const subject  = generateNewsletterSubject();
+    const body     = generateNewsletterHtml(selectedArts);
+    const plainTxt = selectedArts.map(a => `• ${a.title}\n  ${a.link}`).join('\n\n');
+    const toAddr   = to.trim();
 
-    // Native email handler (macOS app)
-    if (window.__hasNativeEmail) {
-      try {
-        await window.nativeEmail(to.trim(), subject, body);
+    if (emailApp === 'mail') {
+      // macOS Mail.app via native bridge (includes HTML body)
+      if (window.__hasNativeEmail) {
+        try {
+          await window.nativeEmail(toAddr, subject, body);
+          setSent(true);
+        } catch (e) { setError('Erro ao abrir Mail: ' + e.message); }
+      } else {
+        // Fallback: mailto + clipboard
+        await copyHtmlToClipboard(body, plainTxt);
+        window.open(`mailto:${encodeURIComponent(toAddr)}?subject=${encodeURIComponent(subject)}`, '_self');
         setSent(true);
-      } catch (e) { setError('Erro ao abrir e-mail: ' + e.message); }
-      setSending(false);
-      return;
+      }
+    } else if (emailApp === 'gmail') {
+      // Gmail web compose
+      await copyHtmlToClipboard(body, plainTxt);
+      const gmailUrl = `https://mail.google.com/mail/?view=cm&to=${encodeURIComponent(toAddr)}&su=${encodeURIComponent(subject)}`;
+      window.open(gmailUrl, '_blank');
+      setSent(true);
+    } else if (emailApp === 'outlook') {
+      // Outlook web compose
+      await copyHtmlToClipboard(body, plainTxt);
+      const outlookUrl = `https://outlook.office.com/mail/deeplink/compose?to=${encodeURIComponent(toAddr)}&subject=${encodeURIComponent(subject)}`;
+      window.open(outlookUrl, '_blank');
+      setSent(true);
     }
 
-    // Browser fallback: copy HTML to clipboard + open mailto
-    try {
-      await navigator.clipboard.write([
-        new ClipboardItem({
-          'text/html':  new Blob([body], { type: 'text/html' }),
-          'text/plain': new Blob([selectedArts.map(a => `• ${a.title}\n  ${a.link}`).join('\n\n')], { type: 'text/plain' }),
-        })
-      ]);
-    } catch (e) {
-      // Fallback: copy plain text
-      try {
-        await navigator.clipboard.writeText(selectedArts.map(a => `• ${a.title}\n  ${a.link}`).join('\n\n'));
-      } catch(e2) {}
-    }
-    window.open(`mailto:${encodeURIComponent(to.trim())}?subject=${encodeURIComponent(subject)}`, '_self');
-    setSent(true);
     setSending(false);
   }
+
+  const sentMessages = {
+    mail:    { title: 'Mail aberto!', desc: 'O e-mail foi aberto no Mail com o conteúdo da newsletter.' },
+    gmail:   { title: 'Gmail aberto!', desc: 'O Gmail foi aberto no navegador com destinatário e assunto preenchidos. Cole o conteúdo (⌘V) no corpo do e-mail.' },
+    outlook: { title: 'Outlook aberto!', desc: 'O Outlook foi aberto no navegador com destinatário e assunto preenchidos. Cole o conteúdo (⌘V) no corpo do e-mail.' },
+  };
 
   if (sent) return html`
     <div class="fixed inset-0 bg-black/40 backdrop-blur-sm z-50 flex items-center justify-center p-4"
@@ -1745,9 +1768,8 @@ function NewsletterModal({ savedArts, onClose }) {
         <div class="w-14 h-14 bg-green-50 rounded-2xl flex items-center justify-center mx-auto mb-4 text-green-500">
           ${Ico.check()}
         </div>
-        <h3 class="text-lg font-semibold text-gray-900 mb-2">Newsletter pronta!</h3>
-        <p class="text-sm text-gray-500 mb-1">O cliente de e-mail foi aberto com o assunto preenchido.</p>
-        <p class="text-sm text-gray-500 mb-6">O conteúdo HTML foi copiado para a área de transferência — cole no corpo do e-mail.</p>
+        <h3 class="text-lg font-semibold text-gray-900 mb-2">${sentMessages[emailApp].title}</h3>
+        <p class="text-sm text-gray-500 mb-6">${sentMessages[emailApp].desc}</p>
         <button onClick=${onClose}
           class="px-6 py-2 bg-blue-600 text-white font-medium rounded-xl hover:bg-blue-700 transition-colors">
           Fechar
@@ -1783,6 +1805,25 @@ function NewsletterModal({ savedArts, onClose }) {
             <input type="email" value=${to} onInput=${e => setTo(e.target.value)}
               placeholder="destinatario@exemplo.com"
               class="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500" />
+          </div>
+
+          <!-- Email app selector -->
+          <div>
+            <label class="block text-xs font-medium text-gray-500 mb-1.5">Enviar via</label>
+            <div class="flex gap-2">
+              ${[
+                ['mail',    '✉️',  'Mail'],
+                ['gmail',   '📧', 'Gmail'],
+                ['outlook', '📨', 'Outlook'],
+              ].map(([val, icon, label]) => html`
+                <button key=${val} onClick=${() => setEmailApp(val)}
+                  class="flex-1 flex items-center justify-center gap-1.5 px-3 py-2.5 rounded-lg border-2 text-sm font-medium transition-all
+                    ${emailApp === val
+                      ? 'border-blue-500 bg-blue-50 text-blue-700'
+                      : 'border-gray-200 bg-white text-gray-600 hover:border-gray-300 hover:bg-gray-50'}">
+                  <span>${icon}</span> ${label}
+                </button>`)}
+            </div>
           </div>
 
           <!-- Subject preview -->
