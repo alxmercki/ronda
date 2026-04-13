@@ -25,3 +25,13 @@ Depois abra `http://IP-DO-MAC:8371`.
 ## GitHub Pages
 
 O GitHub Pages abre a interface como PWA estatico, mas nao executa o backend Node (`/api/fetch`). Nesse modo, a Busca por URL ainda tenta os proxies publicos como fallback. Para a Busca por URL com proxy proprio, publique em um host que rode Node, como Render, Railway, Fly.io ou uma VPS.
+
+## Render
+
+O arquivo `render.yaml` publica a versao completa com backend Node.
+
+Deploy:
+
+```text
+https://render.com/deploy?repo=https://github.com/alxmercki/ronda
+```

@@ -7,7 +7,7 @@ const { URL } = require('node:url');
 
 const ROOT = __dirname;
 const PORT = Number(process.env.PORT || 8371);
-const HOST = process.env.HOST || '127.0.0.1';
+const HOST = process.env.HOST || (process.env.RENDER ? '0.0.0.0' : '127.0.0.1');
 const MAX_BYTES = 8 * 1024 * 1024;
 
 const MIME = {
