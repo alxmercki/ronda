@@ -299,6 +299,55 @@ function resolveUrl(href, baseUrl) {
   } catch { return ''; }
 }
 
+function normalizedArticleKey(url) {
+  try {
+    const u = new URL(url);
+    u.protocol = 'https:';
+    u.hostname = normalizeHost(u.hostname);
+    u.hash = '';
+    ['utm_source','utm_medium','utm_campaign','utm_term','utm_content','ref','source'].forEach(p => u.searchParams.delete(p));
+    const qs = u.searchParams.toString();
+    return `${u.hostname}${u.pathname.replace(/\/+$/, '')}${qs ? `?${qs}` : ''}`.toLowerCase();
+  } catch {
+    return String(url || '').replace(/\/+$/, '').toLowerCase();
+  }
+}
+
+function isForbesSite(url) {
+  try { return normalizeHost(new URL(url).hostname) === 'forbes.com'; }
+  catch { return false; }
+}
+
+function isForbesArticleUrl(url) {
+  try {
+    const u = new URL(url);
+    return isForbesSite(u.href) && /^\/sites\/[^/]+\/20\d{2}\/\d{2}\/\d{2}\/[^/]+\/?$/i.test(u.pathname);
+  } catch { return false; }
+}
+
+function isStrongHomepageArticle(item, baseUrl) {
+  if (!item?.link) return false;
+  if (isForbesSite(baseUrl)) return isForbesArticleUrl(item.link);
+  return !isLikelyNonArticleUrl(item.link);
+}
+
+function preferArticleItem(current, next) {
+  if (!current) return next;
+  if (!next) return current;
+  const curDesc = cleanArticleText(current.description || '');
+  const nextDesc = cleanArticleText(next.description || '');
+  if (!curDesc && nextDesc) return { ...next, _idx: current._idx ?? next._idx };
+  if (curDesc && nextDesc && nextDesc.length > curDesc.length + 20) return { ...next, _idx: current._idx ?? next._idx };
+  const curTitle = cleanArticleText(current.title || '');
+  const nextTitle = cleanArticleText(next.title || '');
+  if (nextTitle.length > curTitle.length + 15) return { ...next, _idx: current._idx ?? next._idx, description: nextDesc || curDesc };
+  return { ...current, description: curDesc || nextDesc };
+}
+
+function isBlockedHtmlResponse(raw) {
+  return /please enable js and disable any ad blocker|captcha-delivery|datadome|access denied/i.test(raw || '');
+}
+
 function parseDateText(text) {
   if (!text) return null;
   const clean = text.trim().replace(/\s+/g, ' ');
@@ -390,6 +439,7 @@ function extractFromNextData(doc, baseUrl) {
     const results = [];
     const seenLinks = new Set();
     const seenObjs  = new WeakSet();
+    const forbesMode = isForbesSite(baseUrl);
 
     function walk(obj, depth) {
       if (depth > 20 || !obj || typeof obj !== 'object') return;
@@ -402,8 +452,10 @@ function extractFromNextData(doc, baseUrl) {
       if (rawUrl && rawTitle && typeof rawTitle === 'string'
           && rawTitle.length > 10 && rawTitle.length < 600) {
         const link = resolveUrl(String(rawUrl), baseUrl);
-        if (link && link.startsWith('http') && !seenLinks.has(link)) {
-          seenLinks.add(link);
+        const key = link.split('#')[0];
+        if (link && link.startsWith('http') && !seenLinks.has(key)
+            && (!forbesMode || isForbesArticleUrl(link))) {
+          seenLinks.add(key);
           let pubDate = null;
           const rawDate = obj.date || obj.datePublished || obj.publishedAt
                        || obj.createdAt || obj.publishDate || obj.timestamp;
@@ -451,6 +503,7 @@ function extractFromNextDataText(text, baseUrl) {
   if (!text) return [];
   const results = [];
   const seenLinks = new Set();
+  const forbesMode = isForbesSite(baseUrl);
 
   // Build a map of all "uri"|"url"|"permalink" → value pairs
   const urlRe = /"(?:uri|url|href|canonicalUrl|permalink|absoluteUrl|articleUrl|articleUri)"\s*:\s*"([^"]{10,300})"/g;
@@ -478,7 +531,8 @@ function extractFromNextDataText(text, baseUrl) {
     if (!rawUrl.startsWith('http') && !rawUrl.startsWith('/')) continue;
     const link = resolveUrl(rawUrl, baseUrl);
     if (!link || !link.startsWith('http')) continue;
-    if (seenLinks.has(link)) continue;
+    const key = link.split('#')[0];
+    if (seenLinks.has(key) || (forbesMode && !isForbesArticleUrl(link))) continue;
 
     // Find closest title
     let best = null, bestDist = Infinity;
@@ -505,7 +559,7 @@ function extractFromNextDataText(text, baseUrl) {
     }
     if (!pubDate) pubDate = dateIsoFromUrl(link);
 
-    seenLinks.add(link);
+    seenLinks.add(key);
     results.push({
       title:       best.replace(/\\"/g, '"').replace(/\\n/g, ' ').trim(),
       link,
@@ -587,6 +641,7 @@ function isLikelyNonArticleUrl(url) {
   try { u = new URL(url); } catch { return true; }
   const path = u.pathname.toLowerCase().replace(/\/+$/, '');
   if (!path || path === '') return true;
+  if (isForbesSite(url) && !isForbesArticleUrl(url)) return true;
   if (path.split('/').filter(Boolean).length === 1 && path.length < 18) return true;
   if (/\.(jpg|jpeg|png|gif|webp|svg|pdf|zip|mp4|mp3|css|js)$/i.test(path)) return true;
   if (/(\/|^)(tag|tags|topic|topics|categoria|category|editoria|section|author|authors|colunistas|search|busca|login|signin|signup|account|newsletter|podcasts?|videos?|video|live|privacy|terms|about|contato|contact)(\/|$)/i.test(path)) return true;
@@ -833,19 +888,21 @@ async function scrapeWebPage(pageUrl, targetDate, prefetchedHtml = null) {
   ];
 
   // ── Merge: WordPress results take priority (have exact dates) ─────────────
-  const seen = new Set();
-  const all  = [];
+  const byKey = new Map();
+  let order = 0;
 
   for (const item of [...wpResults, ...rssResults, ...htmlItems]) {
-    if (!item.link || seen.has(item.link)) continue;
-    seen.add(item.link);
+    if (!item.link || !isStrongHomepageArticle(item, pageUrl)) continue;
     // Universal URL-date fallback for items still missing a date
     if (!item.pubDate) {
       const urlDate = dateFromUrl(item.link);
       if (urlDate) { item.pubDate = urlDate.iso; item._dateApprox = urlDate.approx; item._dateFromUrl = true; }
     }
-    all.push(item);
+    const key = normalizedArticleKey(item.link);
+    const enriched = { ...item, _idx: byKey.get(key)?._idx ?? order++ };
+    byKey.set(key, preferArticleItem(byKey.get(key), enriched));
   }
+  const all = [...byKey.values()];
 
   const dated   = all.filter(a => a.pubDate && !isNaN(new Date(a.pubDate)));
   const undated = all.filter(a => !a.pubDate || isNaN(new Date(a.pubDate)));
@@ -864,7 +921,9 @@ async function scrapeWebPage(pageUrl, targetDate, prefetchedHtml = null) {
       a.pubDate && a._dateApprox && !isNaN(new Date(a.pubDate))
       && a.pubDate.startsWith(targetDate.substring(0, 7))
     );
-    const homepageUndated = undated.filter(a => !a._fromRss && !a._fromWordPress);
+    const homepageUndated = undated.filter(a =>
+      !a._fromRss && !a._fromWordPress && isStrongHomepageArticle(a, pageUrl)
+    );
     homepageUndated.forEach(a => { a._undated = true; });
 
     let out;
@@ -1517,6 +1576,7 @@ async function enrichWithSummaries(arts, onProgress) {
       batch.map(async art => {
         try {
           const raw = await fetchRaw(art.link);
+          if (isBlockedHtmlResponse(raw)) return { link: art.link, description: '' };
           const doc = new DOMParser().parseFromString(raw, 'text/html');
           const jsonLd = extractFromJsonLd(doc, art.link).find(item => item.link === art.link);
           const bodyText = (() => {
