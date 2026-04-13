@@ -1,7 +1,7 @@
 {
   "name": "Ronda — Leitor de Feeds",
   "short_name": "Ronda",
-  "description": "Acompanhe as 10 matérias mais recentes de cada feed RSS",
+  "description": "Acompanhe feeds RSS e homes de sites de notícias pelo browser",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#f9fafb",

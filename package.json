@@ -1,0 +1,12 @@
+{
+  "name": "ronda-web",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Ronda como web app acessivel via browser",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

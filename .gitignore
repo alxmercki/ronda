@@ -1,0 +1,9 @@
+.DS_Store
+Ronda.app/
+macos-app/build/
+index_v*.html
+macos-app/main_v*.swift
+icons/generate.sh
+deploy/
+*.log
+node_modules/

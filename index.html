@@ -154,7 +154,7 @@ async function translateItems(items) {
   }));
 }
 
-// Fetch raw content: native bridge (macOS app) → direct → CORS proxies
+// Fetch raw content: native bridge (macOS app) → web proxy → direct → CORS proxies
 async function fetchRaw(url) {
   const attempts = [
     // 0. Native fetch via Swift URLSession (NO CORS — macOS app only)
@@ -162,13 +162,20 @@ async function fetchRaw(url) {
       if (!window.__hasNativeFetch) throw new Error('not native');
       return await window.nativeFetch(url);
     },
-    // 1. Direct (works when server sends Access-Control-Allow-Origin: *)
+    // 1. Same-origin Node proxy (browser web app mode)
+    async () => {
+      if (location.protocol === 'file:') throw new Error('no web proxy');
+      const r = await fetch(`/api/fetch?url=${encodeURIComponent(url)}`);
+      if (!r.ok) throw new Error(`proxy HTTP ${r.status}`);
+      return r.text();
+    },
+    // 2. Direct (works when server sends Access-Control-Allow-Origin: *)
     async () => {
       const r = await fetch(url);
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       return r.text();
     },
-    // 2. codetabs (reliable, returns raw)
+    // 3. codetabs (reliable, returns raw)
     async () => {
       const r = await fetch(`https://api.codetabs.com/v1/proxy/?quest=${encodeURIComponent(url)}`);
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
@@ -176,7 +183,7 @@ async function fetchRaw(url) {
       if (t.startsWith('{') && t.includes('error')) throw new Error('bloqueado');
       return t;
     },
-    // 3. allorigins (wraps response in JSON)
+    // 4. allorigins (wraps response in JSON)
     async () => {
       const r = await fetch(`https://api.allorigins.win/get?url=${encodeURIComponent(url)}`);
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
@@ -184,7 +191,7 @@ async function fetchRaw(url) {
       if (!j.contents) throw new Error('sem conteúdo');
       return j.contents;
     },
-    // 4. thingproxy (returns raw)
+    // 5. thingproxy (returns raw)
     async () => {
       const r = await fetch(`https://thingproxy.freeboard.io/fetch/${url}`);
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
@@ -385,11 +392,12 @@ function extractFromNextData(doc, baseUrl) {
     const seenObjs  = new WeakSet();
 
     function walk(obj, depth) {
-      if (depth > 12 || !obj || typeof obj !== 'object') return;
+      if (depth > 20 || !obj || typeof obj !== 'object') return;
       if (seenObjs.has(obj)) return;
       seenObjs.add(obj);
 
-      const rawUrl   = obj.uri || obj.url || obj.href || obj.canonicalUrl || obj.link;
+      const rawUrl   = obj.uri || obj.url || obj.href || obj.canonicalUrl || obj.link
+                    || obj.permalink || obj.absoluteUrl || obj.articleUrl || obj.articleUri;
       const rawTitle = obj.title || obj.headline || obj.name;
       if (rawUrl && rawTitle && typeof rawTitle === 'string'
           && rawTitle.length > 10 && rawTitle.length < 600) {
@@ -431,7 +439,82 @@ function extractFromNextData(doc, baseUrl) {
     }
     walk(data, 0);
     return results;
-  } catch { return []; }
+  } catch {
+    // JSON.parse failed (common when CORS proxy truncates large __NEXT_DATA__).
+    // Fall back to regex extraction on the raw text.
+    return extractFromNextDataText(script.textContent, baseUrl);
+  }
+}
+
+// Regex-based fallback: works even on truncated JSON strings
+function extractFromNextDataText(text, baseUrl) {
+  if (!text) return [];
+  const results = [];
+  const seenLinks = new Set();
+
+  // Build a map of all "uri"|"url"|"permalink" → value pairs
+  const urlRe = /"(?:uri|url|href|canonicalUrl|permalink|absoluteUrl|articleUrl|articleUri)"\s*:\s*"([^"]{10,300})"/g;
+  const titleRe = /"(?:title|headline|name)"\s*:\s*"([^"]{5,300})"/g;
+  const descRe  = /"(?:description|deck|excerpt|summary)"\s*:\s*"([^"]{5,500})"/g;
+  const dateRe  = /"(?:date|datePublished|publishedAt|createdAt|publishDate|timestamp)"\s*:\s*"([^"]{6,40})"/g;
+
+  // Collect all positions of each field
+  function collectAll(re) {
+    const map = [];
+    let m;
+    re.lastIndex = 0;
+    while ((m = re.exec(text)) !== null) map.push({ pos: m.index, val: m[1] });
+    return map;
+  }
+
+  const urls   = collectAll(urlRe);
+  const titles = collectAll(titleRe);
+  const descs  = collectAll(descRe);
+  const dates  = collectAll(dateRe);
+
+  // For each URL, find the closest title within ±2000 chars
+  for (const u of urls) {
+    const rawUrl = u.val.replace(/\\u002F/g, '/').replace(/\\\//g, '/');
+    if (!rawUrl.startsWith('http') && !rawUrl.startsWith('/')) continue;
+    const link = resolveUrl(rawUrl, baseUrl);
+    if (!link || !link.startsWith('http')) continue;
+    if (seenLinks.has(link)) continue;
+
+    // Find closest title
+    let best = null, bestDist = Infinity;
+    for (const t of titles) {
+      const d = Math.abs(t.pos - u.pos);
+      if (d < bestDist && d < 2000) { bestDist = d; best = t.val; }
+    }
+    if (!best || best.length < 10) continue;
+
+    // Find closest description
+    let desc = '';
+    let bestDescDist = Infinity;
+    for (const d of descs) {
+      const dist = Math.abs(d.pos - u.pos);
+      if (dist < bestDescDist && dist < 3000) { bestDescDist = dist; desc = d.val; }
+    }
+
+    // Find closest date
+    let pubDate = null;
+    let bestDateDist = Infinity;
+    for (const d of dates) {
+      const dist = Math.abs(d.pos - u.pos);
+      if (dist < bestDateDist && dist < 3000) { bestDateDist = dist; pubDate = parseDateText(d.val) || dateIsoFromUrl(link); }
+    }
+    if (!pubDate) pubDate = dateIsoFromUrl(link);
+
+    seenLinks.add(link);
+    results.push({
+      title:       best.replace(/\\"/g, '"').replace(/\\n/g, ' ').trim(),
+      link,
+      description: desc.replace(/\\"/g, '"').replace(/\\n/g, ' ').replace(/<[^>]*>/g, '').substring(0, 280),
+      pubDate,
+      _dateFromUrl: !pubDate || pubDate === dateIsoFromUrl(link),
+    });
+  }
+  return results;
 }
 
 function extractFromJsonLd(doc, baseUrl) {
@@ -483,36 +566,103 @@ function extractFromJsonLd(doc, baseUrl) {
   return results.filter(r => r.title && r.link);
 }
 
+function cleanArticleText(text) {
+  return (text || '').replace(/\s+/g, ' ').trim();
+}
+
+function normalizeHost(host) {
+  return (host || '').replace(/^www\./, '');
+}
+
+function isSameSiteLink(href, baseUrl) {
+  try {
+    const url = new URL(href);
+    const base = new URL(baseUrl);
+    return normalizeHost(url.hostname) === normalizeHost(base.hostname);
+  } catch { return false; }
+}
+
+function isLikelyNonArticleUrl(url) {
+  let u;
+  try { u = new URL(url); } catch { return true; }
+  const path = u.pathname.toLowerCase().replace(/\/+$/, '');
+  if (!path || path === '') return true;
+  if (path.split('/').filter(Boolean).length === 1 && path.length < 18) return true;
+  if (/\.(jpg|jpeg|png|gif|webp|svg|pdf|zip|mp4|mp3|css|js)$/i.test(path)) return true;
+  if (/(\/|^)(tag|tags|topic|topics|categoria|category|editoria|section|author|authors|colunistas|search|busca|login|signin|signup|account|newsletter|podcasts?|videos?|video|live|privacy|terms|about|contato|contact)(\/|$)/i.test(path)) return true;
+  if (/[?&](utm_|fbclid|gclid|output=)/i.test(u.search)) return true;
+  return false;
+}
+
+function titleFromAnchor(a, container) {
+  const candidates = [
+    a.getAttribute('aria-label') ||
+      '',
+    a.getAttribute('title') || '',
+    a.querySelector('h1,h2,h3,h4,[class*="title"],[class*="headline"],[class*="chamada"]')?.textContent || '',
+    container?.querySelector('h1,h2,h3,h4,[class*="title"],[class*="headline"],[class*="chamada"]')?.textContent || '',
+    a.textContent || '',
+  ].map(cleanArticleText);
+
+  return candidates.find(title =>
+    title.length >= 10 &&
+    title.length <= 260 &&
+    !/^(menu|home|mais|more|next|previous|voltar|entrar|assinar|subscribe|newsletter)$/i.test(title)
+  ) || '';
+}
+
+function scoreArticleLink(a, href, title, container) {
+  let score = 0;
+  const path = new URL(href).pathname.toLowerCase();
+  if (title.length >= 18) score += 2;
+  if (title.length >= 45) score += 1;
+  if (/(^|\/)(20\d{2}|article|articles|news|noticia|noticias|materia|story|stories|post|posts|reportagem)(\/|$)/i.test(path)) score += 3;
+  if (/\/20\d{2}[\/\-]\d{2}[\/\-]\d{2}\//.test(path)) score += 3;
+  if (/\/[a-z0-9-]{10,}[-\d]*\.html$/i.test(path)) score += 2;
+  if ((path.match(/-/g) || []).length >= 2) score += 2;
+  if ((path.split('/').filter(Boolean).pop() || '').length >= 18) score += 1;
+  if (a.closest('main,article,section')) score += 1;
+  if (container?.querySelector('img,p,time,[datetime]')) score += 1;
+  if (container?.matches?.('[class*="card"],[class*="item"],[class*="story"],[class*="article"],[class*="post"],li,article')) score += 1;
+  return score;
+}
+
+function extractDateFromContainer(container) {
+  if (!container) return null;
+  const timeEl = container.querySelector('time[datetime],time[data-datetime],time');
+  if (timeEl) {
+    return timeEl.getAttribute('datetime') || timeEl.getAttribute('data-datetime') || parseDateText(timeEl.textContent);
+  }
+  const dateEl = container.querySelector('[class*="date"],[class*="time"],[class*="timestamp"],[class*="publish"],[class*="posted"],[class*="ago"]');
+  return dateEl ? parseDateText(dateEl.textContent) : null;
+}
+
+function extractDescriptionFromContainer(container) {
+  if (!container) return '';
+  for (const el of container.querySelectorAll('p,[class*="deck"],[class*="summary"],[class*="excerpt"],[class*="description"],[class*="subtitle"],[class*="chamada"]')) {
+    const t = cleanArticleText(el.textContent);
+    if (t.length > 30 && t.length < 500) return t.substring(0, 280);
+  }
+  return '';
+}
+
 function extractFromArticleElements(doc, baseUrl) {
   const results = [];
   // Try semantic article tags first, then common class patterns
   const containers = [...new Set([
     ...doc.querySelectorAll('article'),
-    ...doc.querySelectorAll('[class*="article-item"],[class*="news-item"],[class*="story-card"],[class*="post-card"],[class*="content-card"]'),
+    ...doc.querySelectorAll('[class*="article-item"],[class*="news-item"],[class*="story-card"],[class*="post-card"],[class*="content-card"],[class*="card"],[class*="headline"],[class*="chamada"]'),
   ])];
   for (const c of containers) {
-    const heading = c.querySelector('h1,h2,h3,h4');
-    if (!heading) continue;
-    const title = heading.textContent.trim();
+    const heading = c.querySelector('h1,h2,h3,h4,[class*="title"],[class*="headline"],[class*="chamada"]');
+    const aEl = heading?.querySelector('a[href]') || heading?.closest('a[href]') || c.querySelector('a[href]');
+    if (!aEl) continue;
+    const link = resolveUrl(aEl.getAttribute('href'), baseUrl);
+    if (!link || !link.startsWith('http') || !isSameSiteLink(link, baseUrl) || isLikelyNonArticleUrl(link)) continue;
+    const title = cleanArticleText(heading?.textContent || titleFromAnchor(aEl, c));
     if (!title || title.length < 8) continue;
-    const aEl = heading.querySelector('a[href]') || heading.closest('a[href]') || c.querySelector('a[href]');
-    const link = aEl ? resolveUrl(aEl.getAttribute('href'), baseUrl) : '';
-    if (!link || !link.startsWith('http')) continue;
-    // Date
-    const timeEl = c.querySelector('time[datetime],time[data-datetime]');
-    let pubDate = null;
-    if (timeEl) {
-      pubDate = timeEl.getAttribute('datetime') || timeEl.getAttribute('data-datetime') || parseDateText(timeEl.textContent);
-    } else {
-      const dateEl = c.querySelector('[class*="date"],[class*="time"],[class*="publish"],[class*="posted"]');
-      if (dateEl) pubDate = parseDateText(dateEl.textContent);
-    }
-    // Summary
-    let description = '';
-    for (const p of c.querySelectorAll('p')) {
-      const t = p.textContent.trim();
-      if (t.length > 25 && !t.startsWith('<')) { description = t.substring(0,280); break; }
-    }
+    const pubDate = extractDateFromContainer(c);
+    const description = extractDescriptionFromContainer(c);
     results.push({ title, link, description, pubDate });
   }
   return results;
@@ -520,39 +670,99 @@ function extractFromArticleElements(doc, baseUrl) {
 
 function extractFromLinks(doc, baseUrl) {
   const results = [];
-  const { origin, hostname } = new URL(baseUrl);
-  const articleRe = /\/(20\d{2}|article|articles|news|noticia|noticias|materia|story|stories|post|posts|reportagem)\//i;
-  const datePathRe = /\/20\d{2}[\/\-]\d{2}[\/\-]\d{2}\//;
-  const htmlArticleRe = /\/[a-z0-9-]{10,}[-\d]*\.html$/i;  // Caixin-style .html articles
+  const seen = new Set();
   for (const a of doc.querySelectorAll('a[href]')) {
     const href = resolveUrl(a.getAttribute('href'), baseUrl);
     if (!href.startsWith('http')) continue;
-    let linkHost; try { linkHost = new URL(href).hostname; } catch { continue; }
-    if (linkHost !== hostname) continue;
-    const path = new URL(href).pathname;
-    if (!articleRe.test(path) && !datePathRe.test(path) && !htmlArticleRe.test(path)) continue;
-    const title = a.textContent.trim().replace(/\s+/g,' ');
+    const canonical = href.split('#')[0];
+    if (seen.has(canonical) || !isSameSiteLink(canonical, baseUrl) || isLikelyNonArticleUrl(canonical)) continue;
+    const parent = a.closest('article,[class*="item"],[class*="card"],[class*="story"],[class*="headline"],[class*="chamada"],li') || a.parentElement;
+    const title = titleFromAnchor(a, parent);
     if (!title || title.length < 10) continue;
-    const parent = a.closest('article,[class*="item"],[class*="card"],li') || a.parentElement;
-    const urlDateInfo = dateFromUrl(href);
+    if (scoreArticleLink(a, canonical, title, parent) < 3) continue;
+    seen.add(canonical);
+    const urlDateInfo = dateFromUrl(canonical);
     let pubDate = urlDateInfo?.iso ?? null;
     let fromUrl = !!pubDate;
     if (!pubDate && parent) {
-      const t = parent.querySelector('time[datetime]');
-      if (t) { pubDate = t.getAttribute('datetime') || parseDateText(t.textContent); fromUrl = false; }
-      if (!pubDate) {
-        const dateEl = parent.querySelector('[class*="date"],[class*="time"],[class*="timestamp"],[class*="publish"],[class*="ago"]');
-        if (dateEl) { pubDate = parseDateText(dateEl.textContent); fromUrl = false; }
-      }
+      pubDate = extractDateFromContainer(parent);
+      if (pubDate) fromUrl = false;
     }
-    results.push({ title, link: href, description: '', pubDate, _dateApprox: urlDateInfo?.approx && !pubDate, _dateFromUrl: fromUrl });
+    results.push({ title, link: canonical, description: extractDescriptionFromContainer(parent), pubDate, _dateApprox: urlDateInfo?.approx && !pubDate, _dateFromUrl: fromUrl });
   }
   return results;
 }
 
+// ── RSS / Atom feed auto-discovery ────────────────────────────────────────
+// Tries common feed paths for a site root. Returns articles in scrapeWebPage format.
+async function extractFromRss(siteUrl) {
+  const { origin, hostname } = new URL(siteUrl);
+  // Try to discover feed URL from HTML <link> tags first, then common paths
+  const commonPaths = [
+    `${origin}/feed`,
+    `${origin}/feed/`,
+    `${origin}/rss.xml`,
+    `${origin}/feed.xml`,
+    `${origin}/atom.xml`,
+    `${origin}/rss`,
+    `${origin}/news.rss`,
+    `${origin}/feeds/posts/default`,
+  ];
+  // Known site-specific feeds
+  const norm = hostname.replace(/^www\./, '');
+  if (norm === 'forbes.com')       commonPaths.unshift('https://www.forbes.com/real-time/feed2/');
+  if (norm === 'wired.com')        commonPaths.unshift('https://www.wired.com/feed/rss');
+  if (norm === 'techcrunch.com')   commonPaths.unshift('https://techcrunch.com/feed/');
+  if (norm === 'theverge.com')     commonPaths.unshift('https://www.theverge.com/rss/index.xml');
+  if (norm === 'bbc.com' || norm === 'bbc.co.uk') commonPaths.unshift('https://feeds.bbci.co.uk/news/rss.xml');
+
+  for (const url of commonPaths) {
+    try {
+      const raw = await Promise.race([
+        fetchRaw(url),
+        new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 8000)),
+      ]);
+      const doc = new DOMParser().parseFromString(raw, 'text/xml');
+      if (doc.querySelector('parsererror')) continue;
+      const isAtom = !!doc.querySelector('feed');
+      const itemEls = isAtom ? [...doc.querySelectorAll('entry')] : [...doc.querySelectorAll('item')];
+      if (itemEls.length < 3) continue;
+      const results = itemEls.map(it => {
+        let link, title, desc, dateStr;
+        if (isAtom) {
+          link    = it.querySelector('link[rel="alternate"]')?.getAttribute('href')
+                 || it.querySelector('link')?.getAttribute('href') || '';
+          title   = it.querySelector('title')?.textContent || '';
+          desc    = (it.querySelector('summary')?.textContent || it.querySelector('content')?.textContent || '')
+                      .replace(/<[^>]*>/g, '').trim().substring(0, 280);
+          dateStr = it.querySelector('updated')?.textContent || it.querySelector('published')?.textContent || '';
+        } else {
+          link    = it.querySelector('link')?.textContent?.trim()
+                 || it.querySelector('guid')?.textContent?.trim() || '';
+          title   = it.querySelector('title')?.textContent || '';
+          desc    = (it.querySelector('description')?.textContent || '')
+                      .replace(/<[^>]*>/g, '').trim().substring(0, 280);
+          dateStr = it.querySelector('pubDate')?.textContent || it.querySelector('dc\\:date,date')?.textContent || '';
+        }
+        const pubDate = dateStr ? (() => { const d = new Date(dateStr); return isNaN(d) ? null : d.toISOString(); })() : null;
+        return {
+          title:       title.trim().replace(/\s+/g, ' '),
+          link:        link.trim(),
+          description: desc,
+          pubDate,
+          _dateApprox: false,
+          _fromRss:    true,
+        };
+      }).filter(a => a.title && a.link && a.link.startsWith('http'));
+      if (results.length > 0) return results;
+    } catch { /* try next */ }
+  }
+  return [];
+}
+
 // ── WordPress REST API extractor ──────────────────────────────────────────
 // Works for any WordPress site — returns full ISO dates in one request
-async function extractFromWordPress(siteUrl, limit = 40) {
+async function extractFromWordPress(siteUrl, limit = 100) {
   try {
     const { origin } = new URL(siteUrl);
     const apiUrl = `${origin}/wp-json/wp/v2/posts?per_page=${limit}&_fields=title,link,excerpt,date,modified`;
@@ -565,6 +775,7 @@ async function extractFromWordPress(siteUrl, limit = 40) {
       description: (p.excerpt?.rendered || '').replace(/<[^>]*>/g, '').trim().substring(0, 280),
       pubDate:     p.date ? new Date(p.date).toISOString() : null,
       _dateApprox: false,
+      _fromWordPress: true,
     })).filter(a => a.title && a.link);
   } catch { return []; }
 }
@@ -600,8 +811,11 @@ function sortArticles(articles) {
 async function scrapeWebPage(pageUrl, targetDate, prefetchedHtml = null) {
   const { origin, hostname } = new URL(pageUrl);
 
-  // ── Strategy 1: WordPress REST API (most accurate — full ISO dates) ───────
-  const wpResults = await extractFromWordPress(pageUrl);
+  // ── Strategies 1+2: WordPress REST API and RSS (run in parallel) ──────────
+  const [wpResults, rssResults] = await Promise.all([
+    extractFromWordPress(pageUrl),
+    extractFromRss(pageUrl),
+  ]);
 
   // ── Fetch page HTML (reuse if pre-fetched, e.g. from fetchWebSource) ──────
   const rawHtml = prefetchedHtml || await fetchRaw(pageUrl);
@@ -610,7 +824,7 @@ async function scrapeWebPage(pageUrl, targetDate, prefetchedHtml = null) {
   if (!base) { base = doc.createElement('base'); doc.head.appendChild(base); }
   base.href = pageUrl;
 
-  // ── Strategies 2-5: HTML-based extractors ─────────────────────────────────
+  // ── Strategies 3-6: HTML-based extractors ─────────────────────────────────
   const htmlItems = [
     ...extractFromNextData(doc, pageUrl),       // Next.js __NEXT_DATA__
     ...extractFromJsonLd(doc, pageUrl),          // JSON-LD schema.org
@@ -622,7 +836,7 @@ async function scrapeWebPage(pageUrl, targetDate, prefetchedHtml = null) {
   const seen = new Set();
   const all  = [];
 
-  for (const item of [...wpResults, ...htmlItems]) {
+  for (const item of [...wpResults, ...rssResults, ...htmlItems]) {
     if (!item.link || seen.has(item.link)) continue;
     seen.add(item.link);
     // Universal URL-date fallback for items still missing a date
@@ -633,12 +847,10 @@ async function scrapeWebPage(pageUrl, targetDate, prefetchedHtml = null) {
     all.push(item);
   }
 
-  // ── Discard non-article pages when we have enough dated articles ─────────
-  // Forbes, CNN etc. have navigation/list pages (companies, billionaires, lists)
-  // that have no date and aren't real articles — filter them out.
   const dated   = all.filter(a => a.pubDate && !isNaN(new Date(a.pubDate)));
   const undated = all.filter(a => !a.pubDate || isNaN(new Date(a.pubDate)));
-  const corpus  = dated.length >= 5 ? dated : all;
+  // Keep all articles — sort puts dated first, undated at end
+  const corpus  = all;
 
   // ── Date filter ───────────────────────────────────────────────────────────
   const toLocalDate = d => new Date(d).toLocaleDateString('en-CA');
@@ -652,27 +864,29 @@ async function scrapeWebPage(pageUrl, targetDate, prefetchedHtml = null) {
       a.pubDate && a._dateApprox && !isNaN(new Date(a.pubDate))
       && a.pubDate.startsWith(targetDate.substring(0, 7))
     );
+    const homepageUndated = undated.filter(a => !a._fromRss && !a._fromWordPress);
+    homepageUndated.forEach(a => { a._undated = true; });
 
     let out;
     if (exact.length > 0) {
-      out = sortArticles(exact);
+      out = sortArticles([...exact, ...homepageUndated]);
     } else if (approxMatch.length > 0) {
       approxMatch.forEach(a => { a._approxWarning = true; });
-      out = sortArticles(approxMatch);
+      out = sortArticles([...approxMatch, ...homepageUndated]);
     } else if (dated.length === 0) {
-      // No dates found at all — return undated as fallback
       undated.forEach(a => { a._undated = true; });
-      out = undated.slice(0, 30);
+      out = undated.slice(0, 60);
+    } else if (homepageUndated.length > 0) {
+      out = homepageUndated.slice(0, 60);
     } else {
-      out = []; // Date filter active but no match on that day
+      out = [];
     }
-    // Tag stats for UI debug
     out._stats = { total: all.length, dated: dated.length, undated: undated.length, matched: out.length };
     return out;
   }
 
-  // No date filter — return dated articles sorted newest-first, capped at 60
-  const out = sortArticles(corpus).slice(0, 60);
+  // No date filter — all articles, dated first then undated
+  const out = sortArticles(corpus);
   out._stats = { total: all.length, dated: dated.length, undated: undated.length, matched: out.length };
   return out;
 }
@@ -1281,9 +1495,69 @@ async function translateBatch(arts) {
       return { ...art, title, description };
     } catch { return art; }
   }));
-  // Preserve _stats from scrapeWebPage if present
   if (arts._stats) translated._stats = arts._stats;
   return translated;
+}
+
+// Progressively fetch og:description for every article without a description.
+// Processes in batches of 5; calls onProgress(updatedArts, done, total) after each batch.
+async function enrichWithSummaries(arts, onProgress) {
+  const BATCH = 5;
+  const toFetch = arts.filter(a => !a.description && a.link);
+  if (toFetch.length === 0) return arts;
+
+  let current = [...arts];
+  if (arts._stats) current._stats = arts._stats;
+  let done = 0;
+  const total = toFetch.length;
+
+  for (let i = 0; i < toFetch.length; i += BATCH) {
+    const batch = toFetch.slice(i, i + BATCH);
+    const settled = await Promise.allSettled(
+      batch.map(async art => {
+        try {
+          const raw = await fetchRaw(art.link);
+          const doc = new DOMParser().parseFromString(raw, 'text/html');
+          const jsonLd = extractFromJsonLd(doc, art.link).find(item => item.link === art.link);
+          const bodyText = (() => {
+            const articleBody = doc.querySelector('article,[itemprop="articleBody"],[class*="article-body"],[class*="content-body"],[class*="post-content"]');
+            if (!articleBody) return '';
+            const parts = [...articleBody.querySelectorAll('p')]
+              .map(p => cleanArticleText(p.textContent))
+              .filter(t => t.length > 40 && !/^(leia tamb[eé]m|read more|subscribe|assine|publicidade)/i.test(t));
+            return parts.slice(0, 2).join(' ').substring(0, 280);
+          })();
+          const raw_desc =
+            jsonLd?.description ||
+            doc.querySelector('meta[property="og:description"]')?.getAttribute('content') ||
+            doc.querySelector('meta[name="twitter:description"]')?.getAttribute('content') ||
+            doc.querySelector('meta[name="description"]')?.getAttribute('content') ||
+            bodyText ||
+            '';
+          const clean = raw_desc.replace(/<[^>]*>/g, '').trim().substring(0, 280);
+          const translated = clean ? await gtranslate(clean).catch(() => clean) : '';
+          return { link: art.link, description: translated };
+        } catch {
+          return { link: art.link, description: '' };
+        }
+      })
+    );
+
+    const map = new Map();
+    settled.forEach(r => {
+      if (r.status === 'fulfilled' && r.value.description) map.set(r.value.link, r.value.description);
+    });
+
+    done += batch.length;
+
+    if (map.size > 0) {
+      current = current.map(a => map.has(a.link) ? { ...a, description: map.get(a.link) } : a);
+      if (arts._stats) current._stats = arts._stats;
+    }
+    onProgress?.(current, done, total);
+  }
+
+  return current;
 }
 
 // Fetch + scrape one URL, auto-detect RSS hint (single fetch, reused)
@@ -1300,7 +1574,8 @@ async function fetchWebSource(url, targetDate) {
 }
 
 function WebSearch({ states, onToggle, sources = [], activeSourceId, onSelectSource, onSaveSource, onDeleteSource, onRenameSource }) {
-  const today = new Date().toISOString().split('T')[0];
+  const today     = new Date().toISOString().split('T')[0];
+  const yesterday = new Date(Date.now() - 86400000).toISOString().split('T')[0];
 
   // ── local state ───────────────────────────────
   const [url,          setUrl]          = useState('');
@@ -1308,6 +1583,8 @@ function WebSearch({ states, onToggle, sources = [], activeSourceId, onSelectSou
   const [filterDate,   setFilterDate]   = useState(true);
   const [loading,      setLoading]      = useState(false);   // true | 'multi'
   const [translating,  setTranslating]  = useState(false);
+  const [enriching,    setEnriching]    = useState(false);
+  const [enrichProg,   setEnrichProg]   = useState({ done: 0, total: 0 });
   const [results,      setResults]      = useState(null);
   const [errors,       setErrors]       = useState([]);
   const [rssHints,     setRssHints]     = useState([]);
@@ -1364,12 +1641,27 @@ function WebSearch({ states, onToggle, sources = [], activeSourceId, onSelectSou
       const sorted = sortByDate(arts);
       setResults(sorted);
       setLoading(false);
+
+      // Phase 1: translate titles + existing descriptions
       setTranslating(true);
-      setResults(await translateBatch(sorted));
+      const translated = await translateBatch(sorted);
+      setResults(translated);
+      setTranslating(false);
+
+      // Phase 2: progressively enrich articles without descriptions
+      const missing = translated.filter(a => !a.description && a.link).length;
+      if (missing > 0) {
+        setEnriching(true);
+        setEnrichProg({ done: 0, total: missing });
+        await enrichWithSummaries(translated, (updated, done, total) => {
+          setEnrichProg({ done, total });
+          setResults(updated);
+        });
+      }
     } catch (err) {
       setErrors([{ url: cleanUrl, msg: err.message }]);
     } finally {
-      setLoading(false); setTranslating(false);
+      setLoading(false); setTranslating(false); setEnriching(false);
     }
   }
 
@@ -1398,10 +1690,25 @@ function WebSearch({ states, onToggle, sources = [], activeSourceId, onSelectSou
       const sorted = sortByDate(allArts);
       setResults(sorted);
       setLoading(false);
+
+      // Phase 1: translate
       setTranslating(true);
-      setResults(await translateBatch(sorted));
+      const translated = await translateBatch(sorted);
+      setResults(translated);
+      setTranslating(false);
+
+      // Phase 2: progressively enrich articles without descriptions
+      const missing = translated.filter(a => !a.description && a.link).length;
+      if (missing > 0) {
+        setEnriching(true);
+        setEnrichProg({ done: 0, total: missing });
+        await enrichWithSummaries(translated, (updated, done, total) => {
+          setEnrichProg({ done, total });
+          setResults(updated);
+        });
+      }
     } finally {
-      setLoading(false); setTranslating(false);
+      setLoading(false); setTranslating(false); setEnriching(false);
     }
   }
 
@@ -1480,15 +1787,26 @@ function WebSearch({ states, onToggle, sources = [], activeSourceId, onSelectSou
 
           <!-- Date filter + search button -->
           <div class="flex items-center gap-3 flex-wrap border-t border-gray-100 pt-3">
-            <div class="flex items-center gap-2">
+            <div class="flex items-center gap-2 flex-wrap">
               <input type="checkbox" id="rdFilterDate" checked=${filterDate}
                 onChange=${e => setFilterDate(e.target.checked)}
                 class="w-3.5 h-3.5 rounded border-gray-300 text-blue-600" />
               <label for="rdFilterDate" class="text-xs text-gray-600 cursor-pointer">Filtrar por data</label>
+              ${filterDate && html`
+                <button type="button" onClick=${() => setDate(today)}
+                  class="px-2.5 py-1 rounded text-xs font-medium border transition-colors
+                    ${date === today ? 'bg-blue-600 text-white border-blue-600' : 'border-gray-300 text-gray-500 hover:border-blue-400 hover:text-blue-600'}">
+                  Hoje
+                </button>
+                <button type="button" onClick=${() => setDate(yesterday)}
+                  class="px-2.5 py-1 rounded text-xs font-medium border transition-colors
+                    ${date === yesterday ? 'bg-blue-600 text-white border-blue-600' : 'border-gray-300 text-gray-500 hover:border-blue-400 hover:text-blue-600'}">
+                  Ontem
+                </button>
+                <input type="date" value=${date} onInput=${e => setDate(e.target.value)}
+                  class="px-3 py-1.5 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+              `}
             </div>
-            ${filterDate && html`
-              <input type="date" value=${date} onInput=${e => setDate(e.target.value)}
-                class="px-3 py-1.5 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />`}
             <button
               onClick=${searchMulti}
               disabled=${selected.size === 0 || loading === 'multi'}
@@ -1520,15 +1838,26 @@ function WebSearch({ states, onToggle, sources = [], activeSourceId, onSelectSou
             required
             class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm" />
           <div class="flex items-center gap-3 flex-wrap">
-            <div class="flex items-center gap-2">
+            <div class="flex items-center gap-2 flex-wrap">
               <input type="checkbox" id="suFilterDate" checked=${filterDate}
                 onChange=${e => setFilterDate(e.target.checked)}
                 class="w-3.5 h-3.5 rounded border-gray-300 text-blue-600" />
               <label for="suFilterDate" class="text-xs text-gray-600 cursor-pointer">Filtrar por data</label>
+              ${filterDate && html`
+                <button type="button" onClick=${() => setDate(today)}
+                  class="px-2.5 py-1 rounded text-xs font-medium border transition-colors
+                    ${date === today ? 'bg-blue-600 text-white border-blue-600' : 'border-gray-300 text-gray-500 hover:border-blue-400 hover:text-blue-600'}">
+                  Hoje
+                </button>
+                <button type="button" onClick=${() => setDate(yesterday)}
+                  class="px-2.5 py-1 rounded text-xs font-medium border transition-colors
+                    ${date === yesterday ? 'bg-blue-600 text-white border-blue-600' : 'border-gray-300 text-gray-500 hover:border-blue-400 hover:text-blue-600'}">
+                  Ontem
+                </button>
+                <input type="date" value=${date} onInput=${e => setDate(e.target.value)}
+                  class="px-3 py-1.5 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+              `}
             </div>
-            ${filterDate && html`
-              <input type="date" value=${date} onInput=${e => setDate(e.target.value)}
-                class="px-3 py-1.5 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />`}
             <button type="submit" disabled=${!!loading}
               class="ml-auto flex items-center gap-2 px-5 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 text-sm font-medium transition-colors">
               ${loading === true ? html`<${Spinner}/>` : Ico.search()}
@@ -1557,10 +1886,22 @@ function WebSearch({ states, onToggle, sources = [], activeSourceId, onSelectSou
             <p class="text-xs text-red-600"><strong>${e.url}:</strong> ${e.msg}</p>`)}
         </div>`}
 
-      <!-- ── TRANSLATING ── -->
+      <!-- ── TRANSLATING / ENRICHING ── -->
       ${translating && html`
         <div class="flex items-center gap-2 text-xs text-blue-500">
           <${Spinner}/> Traduzindo para pt-BR…
+        </div>`}
+      ${enriching && html`
+        <div class="flex items-center gap-2 text-xs text-emerald-600">
+          <${Spinner}/>
+          Buscando resumos…
+          ${enrichProg.total > 0 && html`
+            <span class="text-emerald-400">${enrichProg.done}/${enrichProg.total}</span>
+            <span class="w-24 h-1.5 bg-emerald-100 rounded-full overflow-hidden">
+              <span class="block h-full bg-emerald-500 rounded-full transition-all"
+                style=${{ width: `${Math.round(enrichProg.done / enrichProg.total * 100)}%` }}></span>
+            </span>
+          `}
         </div>`}
 
       <!-- ── RESULTS ── -->

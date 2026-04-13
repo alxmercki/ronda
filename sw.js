@@ -1,5 +1,5 @@
-const CACHE = 'ronda-v1';
-const ASSETS = ['/', '/index.html', '/manifest.json'];
+const CACHE = 'ronda-v12';
+const ASSETS = ['/', '/index.html', '/manifest.json', '/icons/icon-192.png', '/icons/icon-512.png'];
 
 self.addEventListener('install', e => {
   e.waitUntil(
@@ -16,6 +16,10 @@ self.addEventListener('activate', e => {
 });
 
 self.addEventListener('fetch', e => {
+  if (new URL(e.request.url).pathname.startsWith('/api/')) {
+    e.respondWith(fetch(e.request));
+    return;
+  }
   // For navigation requests serve index.html from cache if offline
   if (e.request.mode === 'navigate') {
     e.respondWith(
