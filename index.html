@@ -48,6 +48,9 @@ import { createRoot } from 'react-dom/client';
 import htm from 'htm';
 
 const html = htm.bind(React.createElement);
+const GOOGLE_CLIENT_ID_KEY = 'forbes_google_client_id';
+const ACCESS_TOKEN_KEY = 'forbes_access_token';
+const YOUTUBE_API_KEY = 'ronda_yt_apikey';
 
 // ─────────────────────────────────────────────
 // DATA
@@ -2117,14 +2120,14 @@ function TrendsTab() {
   const [loadingYt, setLoadingYt] = useState(false);
   const [errorG, setErrorG]       = useState('');
   const [errorYt, setErrorYt]     = useState('');
-  const [ytApiKey, setYtApiKey]   = useState(() => localStorage.getItem('ronda_yt_apikey') || '');
+  const [ytApiKey, setYtApiKey]   = useState(() => localStorage.getItem(YOUTUBE_API_KEY) || '');
   const [showKeyInput, setShowKeyInput] = useState(false);
   const [ytCategory, setYtCategory] = useState('0');
   const [section, setSection]     = useState('google'); // 'google' | 'youtube'
 
   function saveYtKey(key) {
     setYtApiKey(key);
-    localStorage.setItem('ronda_yt_apikey', key);
+    localStorage.setItem(YOUTUBE_API_KEY, key);
   }
 
   async function loadGoogleTrends() {
@@ -2311,6 +2314,146 @@ function TrendsTab() {
         </div>`}
       </div>`}
     </div>`;
+}
+
+function ApiSettingsTab() {
+  const [googleClientId, setGoogleClientId] = useState(() => localStorage.getItem(GOOGLE_CLIENT_ID_KEY) || '');
+  const [ytApiKey, setYtApiKey] = useState(() => localStorage.getItem(YOUTUBE_API_KEY) || '');
+  const [accessToken, setAccessToken] = useState(() => localStorage.getItem(ACCESS_TOKEN_KEY) || '');
+  const [savedMsg, setSavedMsg] = useState('');
+  const [serverStatus, setServerStatus] = useState({
+    loading: true,
+    googleClientId: '',
+    providers: [],
+    requiresPassword: false,
+    error: '',
+  });
+
+  async function loadServerStatus() {
+    setServerStatus(s => ({ ...s, loading: true, error: '' }));
+    const [googleRes, configRes] = await Promise.allSettled([
+      fetch('/api/google-client-id').then(r => r.ok ? r.json() : Promise.reject(new Error(`Google Client ID ${r.status}`))),
+      fetch('/api/config').then(r => r.ok ? r.json() : Promise.reject(new Error(`Config ${r.status}`))),
+    ]);
+    setServerStatus({
+      loading: false,
+      googleClientId: googleRes.status === 'fulfilled' ? (googleRes.value.clientId || '') : '',
+      providers: configRes.status === 'fulfilled' ? (configRes.value.serverProviders || []) : [],
+      requiresPassword: configRes.status === 'fulfilled' ? !!configRes.value.requiresPassword : false,
+      error: [googleRes, configRes]
+        .filter(r => r.status === 'rejected')
+        .map(r => r.reason?.message || 'erro')
+        .join(' · '),
+    });
+  }
+
+  useEffect(() => { loadServerStatus(); }, []);
+
+  function saveSettings() {
+    const cleanGoogle = googleClientId.trim();
+    const cleanYoutube = ytApiKey.trim();
+    const cleanToken = accessToken.trim();
+    cleanGoogle ? localStorage.setItem(GOOGLE_CLIENT_ID_KEY, cleanGoogle) : localStorage.removeItem(GOOGLE_CLIENT_ID_KEY);
+    cleanYoutube ? localStorage.setItem(YOUTUBE_API_KEY, cleanYoutube) : localStorage.removeItem(YOUTUBE_API_KEY);
+    cleanToken ? localStorage.setItem(ACCESS_TOKEN_KEY, cleanToken) : localStorage.removeItem(ACCESS_TOKEN_KEY);
+    setSavedMsg('Configurações salvas neste navegador.');
+    setTimeout(() => setSavedMsg(''), 3500);
+  }
+
+  const effectiveGoogle = googleClientId.trim() || serverStatus.googleClientId;
+
+  return html`
+    <div class="space-y-4">
+      <div class="bg-white rounded-xl border border-gray-200 p-5">
+        <div class="flex items-start justify-between gap-3 mb-4">
+          <div>
+            <h2 class="text-lg font-semibold text-gray-900">Configurações de APIs</h2>
+            <p class="text-sm text-gray-500 mt-1">
+              Ajustes salvos aqui ficam neste navegador. No Render, as chaves oficiais continuam em Environment.
+            </p>
+          </div>
+          <button onClick=${loadServerStatus}
+            class="flex items-center gap-1.5 px-3 py-1.5 text-sm text-gray-600 hover:text-gray-900 hover:bg-gray-100 rounded-lg transition-colors">
+            ${Ico.refresh(serverStatus.loading)}
+            Verificar
+          </button>
+        </div>
+
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-3 mb-4">
+          <div class="border border-gray-200 rounded-lg p-3">
+            <p class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-1">Google OAuth</p>
+            <p class="text-sm font-medium ${effectiveGoogle ? 'text-green-700' : 'text-red-600'}">
+              ${effectiveGoogle ? 'Client ID disponível' : 'Client ID ausente'}
+            </p>
+            <p class="text-xs text-gray-400 mt-1">${googleClientId.trim() ? 'Usando valor local' : serverStatus.googleClientId ? 'Usando valor do servidor' : 'Nenhum valor encontrado'}</p>
+          </div>
+          <div class="border border-gray-200 rounded-lg p-3">
+            <p class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-1">YouTube</p>
+            <p class="text-sm font-medium ${ytApiKey.trim() ? 'text-green-700' : 'text-amber-600'}">
+              ${ytApiKey.trim() ? 'API key local salva' : 'Sem API key local'}
+            </p>
+            <p class="text-xs text-gray-400 mt-1">Usada na aba Tendências</p>
+          </div>
+          <div class="border border-gray-200 rounded-lg p-3">
+            <p class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-1">Servidor</p>
+            <p class="text-sm font-medium ${serverStatus.error ? 'text-amber-600' : 'text-gray-700'}">
+              ${serverStatus.loading ? 'Verificando...' : serverStatus.error ? 'Parcialmente indisponível' : 'Respondendo'}
+            </p>
+            <p class="text-xs text-gray-400 mt-1">
+              IA: ${serverStatus.providers.length ? serverStatus.providers.join(', ') : 'nenhuma chave no servidor'}
+            </p>
+          </div>
+        </div>
+
+        ${serverStatus.error && html`
+          <div class="bg-amber-50 border border-amber-200 text-amber-700 text-sm rounded-lg p-3 mb-4">${serverStatus.error}</div>`}
+
+        <div class="space-y-4">
+          <div>
+            <label class="block text-xs font-medium text-gray-500 mb-1">Google OAuth Client ID</label>
+            <input type="text" value=${googleClientId} onInput=${e => setGoogleClientId(e.target.value)}
+              placeholder=${serverStatus.googleClientId ? 'Usando o Client ID do servidor' : 'Cole o Client ID do Google Cloud'}
+              class="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+            <p class="text-xs text-gray-400 mt-1">
+              Se você estava chamando isso de API do Gmail, este é o campo que normalmente afeta autenticação Google. A newsletter via Gmail abre o compose web e não usa API key.
+            </p>
+          </div>
+
+          <div>
+            <label class="block text-xs font-medium text-gray-500 mb-1">YouTube Data API key</label>
+            <input type="password" value=${ytApiKey} onInput=${e => setYtApiKey(e.target.value)}
+              placeholder="Cole sua YouTube Data API v3 key"
+              class="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+          </div>
+
+          <div>
+            <label class="block text-xs font-medium text-gray-500 mb-1">Senha/token local do app integrado</label>
+            <input type="password" value=${accessToken} onInput=${e => setAccessToken(e.target.value)}
+              placeholder=${serverStatus.requiresPassword ? 'Senha de acesso do app' : 'Opcional neste ambiente'}
+              class="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+            <p class="text-xs text-gray-400 mt-1">É o token enviado para o backend quando a Ronda busca páginas por URL.</p>
+          </div>
+        </div>
+
+        <div class="flex flex-wrap items-center gap-2 mt-5">
+          <button onClick=${saveSettings}
+            class="px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 transition-colors">
+            Salvar configurações
+          </button>
+          <a href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noopener noreferrer"
+            class="px-4 py-2 bg-gray-100 text-gray-700 text-sm font-medium rounded-lg hover:bg-gray-200 transition-colors">
+            Abrir Google Cloud
+          </a>
+          ${savedMsg && html`<span class="text-sm text-green-600">${savedMsg}</span>`}
+        </div>
+      </div>
+
+      <div class="bg-blue-50 border border-blue-100 rounded-xl p-4 text-sm text-blue-800">
+        Para corrigir de forma permanente no Render, abra o serviço e atualize as variáveis GOOGLE_CLIENT_ID,
+        ANTHROPIC_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY ou ACCESS_PASSWORD em Environment.
+      </div>
+    </div>
+  `;
 }
 
 // ── NEWSLETTER GENERATOR ──────────────────────
@@ -3261,12 +3404,13 @@ function App() {
 
           <!-- Tabs -->
           <div class="flex gap-1 mb-4 bg-white rounded-xl border border-gray-200 p-1 w-fit">
-            ${[['articles','Artigos'],['websearch','Busca Web'],['trends','Tendências'],['saved','Salvos'],['suggestions','Sugestões']].map(([t,l]) => html`
+            ${[['articles','Artigos'],['websearch','Busca Web'],['trends','Tendências'],['saved','Salvos'],['settings','Configurações'],['suggestions','Sugestões']].map(([t,l]) => html`
               <button key=${t} onClick=${() => setTab(t)}
                 class="px-4 py-1.5 rounded-lg text-sm font-medium transition-colors flex items-center gap-1.5 ${tab===t ? 'bg-blue-600 text-white shadow-sm' : 'text-gray-600 hover:text-gray-900'}">
                 ${t==='websearch' ? html`${Ico.globe()}<span>${l}</span>`
                   : t==='trends' ? html`${Ico.trend()}<span>${l}</span>`
                   : t==='saved' ? html`${Ico.mark(false)}<span>${l}</span>`
+                  : t==='settings' ? html`<span>${l}</span>`
                   : l}
                 ${t==='saved' && savedArts.length>0 && html`<span class="bg-amber-400 text-white text-xs w-4 h-4 rounded-full flex items-center justify-center">${savedArts.length}</span>`}
                 ${t==='suggestions' && suggestions.length>0 && html`<span class="bg-blue-400 text-white text-xs w-4 h-4 rounded-full flex items-center justify-center">${suggestions.length}</span>`}
@@ -3414,6 +3558,9 @@ function App() {
             onDeleteSource=${deleteWebSource}
             onRenameSource=${renameWebSource}
           />`}
+
+          <!-- ── CONFIGURAÇÕES TAB ── -->
+          ${tab === 'settings' && html`<${ApiSettingsTab}/>`}
 
           <!-- ── SUGGESTIONS TAB ── -->
           ${tab === 'suggestions' && html`<div>
