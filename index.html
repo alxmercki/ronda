@@ -1562,7 +1562,7 @@ async function translateBatch(arts) {
 // Processes in batches of 5; calls onProgress(updatedArts, done, total) after each batch.
 async function enrichWithSummaries(arts, onProgress) {
   const BATCH = 5;
-  const toFetch = arts.filter(a => !a.description && a.link);
+  const toFetch = arts.filter(a => !a.description && a.link && !isForbesArticleUrl(a.link));
   if (toFetch.length === 0) return arts;
 
   let current = [...arts];
