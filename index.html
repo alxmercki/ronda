@@ -2521,6 +2521,25 @@ function generateNewsletterSubject() {
   return `Forbes Daily, ${date} ${time}`;
 }
 
+function generateCompactEmailBody(articles, maxChars = 3500) {
+  const header = `Forbes Daily\n${new Date().toLocaleDateString('pt-BR', { weekday:'long', day:'2-digit', month:'long', year:'numeric' })}\n\nConfira os destaques selecionados para hoje:\n\n`;
+  const footer = count => `\n\n—\nForbes Daily · ${count} matéria${count !== 1 ? 's' : ''} selecionada${count !== 1 ? 's' : ''}`;
+  const lines = [];
+  let used = header.length + footer(articles.length).length;
+
+  for (const [i, art] of articles.entries()) {
+    const item = `${i+1}. ${art.title}\n   ${art.source ? art.source + ' · ' : ''}${art.link || ''}`;
+    if (used + item.length + 2 > maxChars) {
+      lines.push(`\nMais ${articles.length - i} matéria${articles.length - i !== 1 ? 's' : ''} selecionada${articles.length - i !== 1 ? 's' : ''} ficaram fora desta prévia. A versão completa foi copiada para colar no corpo do e-mail.`);
+      break;
+    }
+    lines.push(item);
+    used += item.length + 2;
+  }
+
+  return header + lines.join('\n\n') + footer(articles.length);
+}
+
 function NewsletterModal({ savedArts, onClose }) {
   const [to, setTo]         = useState('');
   const [emailApp, setEmailApp] = useState('mail'); // 'mail' | 'gmail' | 'outlook'
@@ -2582,9 +2601,10 @@ function NewsletterModal({ savedArts, onClose }) {
         setSent(true);
       }
     } else if (emailApp === 'gmail') {
-      // Gmail rejects very long compose URLs. Keep the full newsletter in the clipboard.
+      // Gmail rejects very long compose URLs. Send a compact body and keep the full newsletter in the clipboard.
       await copyHtmlToClipboard(body, plainTxt);
-      const gmailUrl = `https://mail.google.com/mail/?view=cm&fs=1&to=${encodeURIComponent(toAddr)}&su=${encodeURIComponent(subject)}`;
+      const gmailBody = generateCompactEmailBody(selectedArts);
+      const gmailUrl = `https://mail.google.com/mail/?view=cm&fs=1&to=${encodeURIComponent(toAddr)}&su=${encodeURIComponent(subject)}&body=${encodeURIComponent(gmailBody)}`;
       window.open(gmailUrl, '_blank');
       setSent(true);
     } else if (emailApp === 'outlook') {
@@ -2603,7 +2623,7 @@ function NewsletterModal({ savedArts, onClose }) {
 
   const sentMessages = {
     mail:    { title: 'Mail aberto!', desc: 'O e-mail foi aberto no Mail com o conteúdo da newsletter.' },
-    gmail:   { title: 'Gmail aberto!', desc: 'O Gmail foi aberto com destinatário e assunto. O conteúdo da newsletter já foi copiado: cole no corpo do e-mail (⌘V) e envie.' },
+    gmail:   { title: 'Gmail aberto!', desc: 'O Gmail foi aberto com uma versão compacta no corpo. A versão completa também foi copiada: cole no corpo do e-mail (⌘V) se quiser substituir.' },
     outlook: { title: 'Outlook aberto!', desc: 'O Outlook foi aberto com destinatário, assunto e corpo preenchidos. Para a versão formatada (HTML), selecione tudo no corpo (⌘A), cole (⌘V) e envie.' },
   };
 
