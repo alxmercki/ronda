@@ -51,6 +51,7 @@ const html = htm.bind(React.createElement);
 const GOOGLE_CLIENT_ID_KEY = 'forbes_google_client_id';
 const ACCESS_TOKEN_KEY = 'forbes_access_token';
 const YOUTUBE_API_KEY = 'ronda_yt_apikey';
+const EDITORIAL_PROVIDER_KEY = 'ronda_editorial_provider';
 
 // ─────────────────────────────────────────────
 // DATA
@@ -155,6 +156,15 @@ async function translateItems(items) {
       return item; // keep original if translation fails
     }
   }));
+}
+
+function fileToDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ''));
+    reader.onerror = () => reject(new Error(`Falha ao ler ${file.name}`));
+    reader.readAsDataURL(file);
+  });
 }
 
 // Fetch raw content: native bridge (macOS app) → web proxy → direct → CORS proxies
@@ -2316,6 +2326,296 @@ function TrendsTab() {
     </div>`;
 }
 
+function EditorialCheckTab() {
+  const [url, setUrl] = useState('');
+  const [text, setText] = useState('');
+  const [images, setImages] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [result, setResult] = useState(null);
+  const [error, setError] = useState('');
+  const [provider, setProvider] = useState(() => localStorage.getItem(EDITORIAL_PROVIDER_KEY) || '');
+  const [serverStatus, setServerStatus] = useState({
+    loading: true,
+    providers: [],
+    requiresPassword: false,
+    error: '',
+  });
+
+  async function loadServerStatus() {
+    setServerStatus(prev => ({ ...prev, loading: true, error: '' }));
+    try {
+      const resp = await fetch('/api/config');
+      if (!resp.ok) throw new Error(`Config ${resp.status}`);
+      const data = await resp.json();
+      setServerStatus({
+        loading: false,
+        providers: data.serverProviders || [],
+        requiresPassword: !!data.requiresPassword,
+        error: '',
+      });
+      if (!provider && data.serverProviders?.length) {
+        setProvider(data.serverProviders[0]);
+      }
+    } catch (err) {
+      setServerStatus({
+        loading: false,
+        providers: [],
+        requiresPassword: false,
+        error: err.message || 'Não foi possível verificar o servidor.',
+      });
+    }
+  }
+
+  useEffect(() => { loadServerStatus(); }, []);
+  useEffect(() => {
+    provider ? localStorage.setItem(EDITORIAL_PROVIDER_KEY, provider) : localStorage.removeItem(EDITORIAL_PROVIDER_KEY);
+  }, [provider]);
+
+  async function handleFiles(selectedFiles) {
+    const files = Array.from(selectedFiles || []).filter(file => file.type.startsWith('image/')).slice(0, 6);
+    if (files.length === 0) return;
+    const payload = await Promise.all(files.map(async file => ({
+      id: `${file.name}-${file.size}-${file.lastModified}`,
+      name: file.name,
+      size: file.size,
+      preview: await fileToDataUrl(file),
+    })));
+    setImages(prev => [...prev, ...payload].slice(0, 6));
+  }
+
+  function removeImage(id) {
+    setImages(prev => prev.filter(image => image.id !== id));
+  }
+
+  async function analyze() {
+    if (!url.trim() && !text.trim() && images.length === 0) {
+      setError('Envie ao menos uma URL, um texto ou uma imagem.');
+      return;
+    }
+
+    setLoading(true);
+    setError('');
+    setResult(null);
+
+    try {
+      const resp = await fetch('/api/editorial-check', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          url: url.trim(),
+          text: text.trim(),
+          images: images.map(image => image.preview),
+          provider: provider || undefined,
+          accessToken: localStorage.getItem(ACCESS_TOKEN_KEY) || '',
+        }),
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok) throw new Error(data.error || `HTTP ${resp.status}`);
+      setResult(data);
+    } catch (err) {
+      setError(err.message || 'Falha ao rodar a checagem editorial.');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function copyResult() {
+    if (!result?.analysis) return;
+    try {
+      await navigator.clipboard.writeText(result.analysis);
+    } catch {}
+  }
+
+  const hasInputs = url.trim() || text.trim() || images.length > 0;
+  return html`
+    <div class="space-y-4">
+      <div class="bg-white rounded-xl border border-gray-200 p-4 sm:p-5">
+        <div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+          <div>
+            <h2 class="text-lg font-semibold text-gray-900">Art Check</h2>
+            <p class="text-sm text-gray-500 mt-1">
+              Suba imagens, cole o texto original e/ou informe a URL. A análise cruza os materiais e aponta incongruências, riscos editoriais e sugestões de melhoria.
+            </p>
+          </div>
+          <button onClick=${loadServerStatus}
+            class="flex items-center gap-1.5 px-3 py-1.5 text-sm text-gray-600 hover:text-gray-900 hover:bg-gray-100 rounded-lg transition-colors self-start">
+            ${Ico.refresh(serverStatus.loading)}
+            Verificar IA
+          </button>
+        </div>
+
+        <div class="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_260px] gap-4 mt-5">
+          <div class="space-y-4">
+            <div>
+              <label class="block text-xs font-medium text-gray-500 mb-1">URL original</label>
+              <input type="url" value=${url} onInput=${e => setUrl(e.target.value)}
+                placeholder="https://www.site.com/materia"
+                class="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+              <p class="text-xs text-gray-400 mt-1">Se você preencher a URL, o servidor tenta extrair o texto da página antes da análise.</p>
+            </div>
+
+            <div>
+              <label class="block text-xs font-medium text-gray-500 mb-1">Texto original</label>
+              <textarea value=${text} onInput=${e => setText(e.target.value)}
+                rows="10"
+                placeholder="Cole aqui a chamada, legenda, texto da newsletter, resumo ou qualquer versão original que precise ser revisada."
+                class="w-full px-3 py-3 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 resize-y"></textarea>
+            </div>
+
+            <div>
+              <div class="flex items-center justify-between gap-3 mb-2">
+                <label class="block text-xs font-medium text-gray-500">Imagens</label>
+                <span class="text-xs text-gray-400">até 6 arquivos</span>
+              </div>
+              <label class="flex flex-col items-center justify-center gap-2 border border-dashed border-gray-300 rounded-xl px-4 py-6 text-center cursor-pointer hover:border-blue-400 hover:bg-blue-50/40 transition-colors">
+                <span class="w-10 h-10 rounded-xl bg-gray-100 flex items-center justify-center text-gray-500">${Ico.upload()}</span>
+                <div>
+                  <p class="text-sm font-medium text-gray-700">Selecionar imagens</p>
+                  <p class="text-xs text-gray-400 mt-1">prints, artes, chamadas e cards para revisar texto visível e coerência editorial</p>
+                </div>
+                <input type="file" accept="image/*" multiple class="hidden" onChange=${e => handleFiles(e.target.files)} />
+              </label>
+
+              ${images.length > 0 && html`
+                <div class="grid grid-cols-2 sm:grid-cols-3 gap-3 mt-3">
+                  ${images.map(image => html`
+                    <div key=${image.id} class="border border-gray-200 rounded-xl overflow-hidden bg-gray-50">
+                      <img src=${image.preview} alt=${image.name} class="w-full aspect-square object-cover" />
+                      <div class="p-2">
+                        <p class="text-xs font-medium text-gray-700 truncate">${image.name}</p>
+                        <button onClick=${() => removeImage(image.id)}
+                          class="mt-2 text-xs text-red-500 hover:text-red-700 transition-colors">
+                          Remover
+                        </button>
+                      </div>
+                    </div>`)}
+                </div>`}
+            </div>
+          </div>
+
+          <div class="space-y-3">
+            <div class="border border-gray-200 rounded-xl p-4 bg-gray-50">
+              <p class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">Execução</p>
+
+              <div class="space-y-3">
+                <div>
+                  <label class="block text-xs font-medium text-gray-500 mb-1">Provedor</label>
+                  <select value=${provider} onChange=${e => setProvider(e.target.value)}
+                    class="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white">
+                    <option value="">Automático</option>
+                    ${serverStatus.providers.map(name => html`
+                      <option key=${name} value=${name}>${name}</option>`)}
+                  </select>
+                </div>
+
+                <div class="grid grid-cols-1 gap-2 text-xs">
+                  <div class="border border-gray-200 rounded-lg px-3 py-2 bg-white">
+                    <span class="text-gray-400">Servidor</span>
+                    <p class="font-medium text-gray-700 mt-0.5">
+                      ${serverStatus.loading ? 'verificando...' : serverStatus.error ? 'indisponível' : serverStatus.providers.length ? serverStatus.providers.join(', ') : 'sem provedor configurado'}
+                    </p>
+                  </div>
+                  <div class="border border-gray-200 rounded-lg px-3 py-2 bg-white">
+                    <span class="text-gray-400">Senha</span>
+                    <p class="font-medium text-gray-700 mt-0.5">
+                      ${serverStatus.requiresPassword ? 'necessária' : 'não exigida'}
+                    </p>
+                  </div>
+                  <div class="border border-gray-200 rounded-lg px-3 py-2 bg-white">
+                    <span class="text-gray-400">Entradas</span>
+                    <p class="font-medium text-gray-700 mt-0.5">
+                      ${[
+                        url.trim() ? 'URL' : null,
+                        text.trim() ? 'texto' : null,
+                        images.length ? `${images.length} imagem(ns)` : null,
+                      ].filter(Boolean).join(' + ') || 'nenhuma'}
+                    </p>
+                  </div>
+                </div>
+
+                <button onClick=${analyze} disabled=${loading || !hasInputs}
+                  class="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50">
+                  ${loading ? html`<${Spinner}/>` : Ico.bulb()}
+                  ${loading ? 'Analisando...' : 'Rodar checagem'}
+                </button>
+
+                <p class="text-xs text-gray-400">
+                  O relatório sinaliza inconsistências, melhora redação e pode sugerir uma versão reescrita quando houver base suficiente.
+                </p>
+              </div>
+            </div>
+
+            ${serverStatus.error && html`
+              <div class="bg-amber-50 border border-amber-200 text-amber-700 text-sm rounded-xl p-3">
+                ${serverStatus.error}
+              </div>`}
+
+            ${error && html`
+              <div class="bg-red-50 border border-red-200 text-red-600 text-sm rounded-xl p-3">
+                ${error}
+              </div>`}
+          </div>
+        </div>
+      </div>
+
+      <div class="bg-white rounded-xl border border-gray-200 overflow-hidden">
+        <div class="px-4 sm:px-5 py-4 border-b border-gray-100 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <h3 class="text-base font-semibold text-gray-900">Resultado da análise</h3>
+            <p class="text-sm text-gray-500 mt-1">
+              ${result
+                ? `Provedor: ${result.provider || 'automático'}${result.model ? ` · ${result.model}` : ''}`
+                : 'O relatório aparece aqui assim que a checagem terminar.'}
+            </p>
+          </div>
+          ${result?.analysis && html`
+            <button onClick=${copyResult}
+              class="px-3 py-1.5 bg-gray-100 text-gray-700 text-sm font-medium rounded-lg hover:bg-gray-200 transition-colors self-start">
+              Copiar relatório
+            </button>`}
+        </div>
+
+        <div class="p-4 sm:p-5">
+          ${loading && html`
+            <div class="space-y-3">
+              <div class="h-4 bg-gray-100 rounded animate-pulse"></div>
+              <div class="h-4 bg-gray-100 rounded animate-pulse w-11/12"></div>
+              <div class="h-4 bg-gray-100 rounded animate-pulse w-10/12"></div>
+              <div class="h-20 bg-gray-100 rounded animate-pulse"></div>
+            </div>`}
+
+          ${!loading && !result && !error && html`
+            <div class="text-center py-12 text-sm text-gray-400">
+              Envie o material e rode a checagem para ver o parecer editorial.
+            </div>`}
+
+          ${result?.analysis && html`
+            <div class="space-y-4">
+              ${(result.sourceUrl || result.imageCount || result.sourceText) && html`
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+                  ${result.sourceUrl && html`
+                    <div class="border border-gray-200 rounded-xl p-3">
+                      <p class="text-xs text-gray-400 mb-1">URL analisada</p>
+                      <a href=${result.sourceUrl} target="_blank" rel="noopener noreferrer"
+                        class="text-sm text-blue-600 hover:underline break-all">${result.sourceUrl}</a>
+                    </div>`}
+                  <div class="border border-gray-200 rounded-xl p-3">
+                    <p class="text-xs text-gray-400 mb-1">Imagens</p>
+                    <p class="text-sm text-gray-700">${result.imageCount || 0}</p>
+                  </div>
+                  <div class="border border-gray-200 rounded-xl p-3">
+                    <p class="text-xs text-gray-400 mb-1">Texto-base</p>
+                    <p class="text-sm text-gray-700">${result.sourceText ? `${result.sourceText.length} caracteres` : 'não informado'}</p>
+                  </div>
+                </div>`}
+
+              <pre class="whitespace-pre-wrap text-sm leading-6 text-gray-800 bg-gray-50 border border-gray-200 rounded-xl p-4 overflow-x-auto">${result.analysis}</pre>
+            </div>`}
+        </div>
+      </div>
+    </div>`;
+}
+
 function ApiSettingsTab() {
   const [googleClientId, setGoogleClientId] = useState(() => localStorage.getItem(GOOGLE_CLIENT_ID_KEY) || '');
   const [ytApiKey, setYtApiKey] = useState(() => localStorage.getItem(YOUTUBE_API_KEY) || '');
@@ -2446,6 +2746,10 @@ function ApiSettingsTab() {
           </a>
           ${savedMsg && html`<span class="text-sm text-green-600">${savedMsg}</span>`}
         </div>
+
+        <p class="text-xs text-gray-400 mt-4">
+          O Art Check usa os provedores de IA configurados no servidor e lê a senha salva aqui, quando o ambiente exigir autenticação.
+        </p>
       </div>
 
       <div class="bg-blue-50 border border-blue-100 rounded-xl p-4 text-sm text-blue-800">
@@ -2457,9 +2761,21 @@ function ApiSettingsTab() {
 }
 
 // ── NEWSLETTER GENERATOR ──────────────────────
-function generateNewsletterHtml(articles) {
+function escapeHtml(text) {
+  return String(text || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function generateNewsletterHtml(articles, options = {}) {
   const today = new Date();
   const dateStr = today.toLocaleDateString('pt-BR', { weekday: 'long', day: '2-digit', month: 'long', year: 'numeric' });
+  const intro = options.intro?.trim() || 'Confira os destaques selecionados para hoje:';
+  const footer = options.footer?.trim() || `Forbes Daily · Newsletter interna · ${articles.length} matéria${articles.length !== 1 ? 's' : ''} selecionada${articles.length !== 1 ? 's' : ''}`;
+  const title = options.title?.trim() || 'Forbes Daily';
   const items = articles.map(art => {
     const pub = art.pubDate ? new Date(art.pubDate) : null;
     const pubStr = pub && !isNaN(pub) ? pub.toLocaleDateString('pt-BR', { day:'2-digit', month:'short', year:'numeric' }) : '';
@@ -2467,13 +2783,13 @@ function generateNewsletterHtml(articles) {
       <tr><td style="padding:0 0 24px 0;">
         <table width="100%" cellpadding="0" cellspacing="0" style="border-bottom:1px solid #e5e7eb;padding-bottom:20px;">
           <tr><td>
-            <a href="${art.link}" style="color:#111827;font-size:16px;font-weight:600;text-decoration:none;line-height:1.4;" target="_blank">${art.title}</a>
+            <a href="${escapeHtml(art.link)}" style="color:#111827;font-size:16px;font-weight:600;text-decoration:none;line-height:1.4;" target="_blank">${escapeHtml(art.title)}</a>
           </td></tr>
-          ${art.description ? `<tr><td style="padding-top:6px;color:#6b7280;font-size:14px;line-height:1.5;">${art.description}</td></tr>` : ''}
+          ${art.description ? `<tr><td style="padding-top:6px;color:#6b7280;font-size:14px;line-height:1.5;">${escapeHtml(art.description)}</td></tr>` : ''}
           <tr><td style="padding-top:8px;font-size:12px;color:#9ca3af;">
-            ${art.source ? `<span style="color:#6b7280;font-weight:500;">${art.source}</span>` : ''}
+            ${art.source ? `<span style="color:#6b7280;font-weight:500;">${escapeHtml(art.source)}</span>` : ''}
             ${pubStr ? ` · ${pubStr}` : ''}
-            ${art.link ? ` · <a href="${art.link}" style="color:#2563eb;text-decoration:none;" target="_blank">Ler matéria →</a>` : ''}
+            ${art.link ? ` · <a href="${escapeHtml(art.link)}" style="color:#2563eb;text-decoration:none;" target="_blank">Ler matéria →</a>` : ''}
           </td></tr>
         </table>
       </td></tr>`;
@@ -2487,13 +2803,13 @@ function generateNewsletterHtml(articles) {
       <table width="600" cellpadding="0" cellspacing="0" style="background:#ffffff;border-radius:12px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,0.1);">
         <!-- Header -->
         <tr><td style="background:#111827;padding:32px 40px;text-align:center;">
-          <h1 style="margin:0;color:#ffffff;font-size:28px;font-weight:700;letter-spacing:0.5px;">Forbes Daily</h1>
+          <h1 style="margin:0;color:#ffffff;font-size:28px;font-weight:700;letter-spacing:0.5px;">${escapeHtml(title)}</h1>
           <p style="margin:8px 0 0;color:#9ca3af;font-size:14px;">${dateStr}</p>
         </td></tr>
         <!-- Intro -->
         <tr><td style="padding:28px 40px 8px;">
           <p style="margin:0;color:#6b7280;font-size:14px;line-height:1.6;">
-            Confira os destaques selecionados para hoje:
+            ${escapeHtml(intro)}
           </p>
         </td></tr>
         <!-- Articles -->
@@ -2505,7 +2821,7 @@ function generateNewsletterHtml(articles) {
         <!-- Footer -->
         <tr><td style="padding:20px 40px 32px;border-top:1px solid #e5e7eb;text-align:center;">
           <p style="margin:0;color:#9ca3af;font-size:12px;">
-            Forbes Daily · Newsletter interna · ${articles.length} matéria${articles.length !== 1 ? 's' : ''} selecionada${articles.length !== 1 ? 's' : ''}
+            ${escapeHtml(footer)}
           </p>
         </td></tr>
       </table>
@@ -2521,11 +2837,14 @@ function generateNewsletterSubject() {
   return `Forbes Daily, ${date} ${time}`;
 }
 
-function generateCompactEmailBody(articles, maxChars = 3500) {
-  const header = `Forbes Daily\n${new Date().toLocaleDateString('pt-BR', { weekday:'long', day:'2-digit', month:'long', year:'numeric' })}\n\nConfira os destaques selecionados para hoje:\n\n`;
-  const footer = count => `\n\n—\nForbes Daily · ${count} matéria${count !== 1 ? 's' : ''} selecionada${count !== 1 ? 's' : ''}`;
+function generateCompactEmailBody(articles, options = {}, maxChars = 3500) {
+  const title = options.title?.trim() || 'Forbes Daily';
+  const intro = options.intro?.trim() || 'Confira os destaques selecionados para hoje:';
+  const footerText = options.footer?.trim() || `${title} · ${articles.length} matéria${articles.length !== 1 ? 's' : ''} selecionada${articles.length !== 1 ? 's' : ''}`;
+  const header = `${title}\n${new Date().toLocaleDateString('pt-BR', { weekday:'long', day:'2-digit', month:'long', year:'numeric' })}\n\n${intro}\n\n`;
+  const footer = () => `\n\n—\n${footerText}`;
   const lines = [];
-  let used = header.length + footer(articles.length).length;
+  let used = header.length + footer().length;
 
   for (const [i, art] of articles.entries()) {
     const item = `${i+1}. ${art.title}\n   ${art.source ? art.source + ' · ' : ''}${art.link || ''}`;
@@ -2537,13 +2856,54 @@ function generateCompactEmailBody(articles, maxChars = 3500) {
     used += item.length + 2;
   }
 
-  return header + lines.join('\n\n') + footer(articles.length);
+  return header + lines.join('\n\n') + footer();
+}
+
+function generateNewsletterMarkdown(articles, options = {}) {
+  const title = options.title?.trim() || 'Forbes Daily';
+  const subject = options.subject?.trim() || generateNewsletterSubject();
+  const intro = options.intro?.trim() || 'Confira os destaques selecionados para hoje:';
+  const footer = options.footer?.trim() || `${title} · ${articles.length} matéria${articles.length !== 1 ? 's' : ''} selecionada${articles.length !== 1 ? 's' : ''}`;
+  const dateStr = new Date().toLocaleDateString('pt-BR', { weekday:'long', day:'2-digit', month:'long', year:'numeric' });
+
+  const items = articles.map((art, index) => {
+    const pub = art.pubDate ? new Date(art.pubDate) : null;
+    const meta = [
+      art.source || '',
+      pub && !isNaN(pub) ? pub.toLocaleDateString('pt-BR', { day:'2-digit', month:'short', year:'numeric' }) : '',
+    ].filter(Boolean).join(' · ');
+
+    return [
+      `${index + 1}. [${art.title || 'Sem título'}](${art.link || ''})`,
+      art.description ? `   ${art.description}` : '',
+      meta ? `   ${meta}` : '',
+      art.link ? `   Link original: ${art.link}` : '',
+    ].filter(Boolean).join('\n');
+  }).join('\n\n');
+
+  return `# ${title}
+
+**Assunto:** ${subject}
+**Data:** ${dateStr}
+
+${intro}
+
+${items}
+
+---
+${footer}`;
 }
 
 function NewsletterModal({ savedArts, onClose }) {
   const [to, setTo]         = useState('');
   const [emailApp, setEmailApp] = useState('mail'); // 'mail' | 'gmail' | 'outlook'
   const [selected, setSelected] = useState(() => new Set(savedArts.map(a => a.key)));
+  const [from, setFrom] = useState('am@forbes.com.br');
+  const [newsletterTitle, setNewsletterTitle] = useState('Forbes Daily');
+  const [subject, setSubject] = useState(() => generateNewsletterSubject());
+  const [intro, setIntro] = useState('Confira os destaques selecionados para hoje:');
+  const [footer, setFooter] = useState(() => `Forbes Daily · Newsletter interna · ${savedArts.length} matéria${savedArts.length !== 1 ? 's' : ''} selecionada${savedArts.length !== 1 ? 's' : ''}`);
+  const [articleEdits, setArticleEdits] = useState(() => Object.fromEntries(savedArts.map(art => [art.key, { ...art }])));
   const [sending, setSending]   = useState(false);
   const [sent, setSent]         = useState(false);
   const [error, setError]       = useState('');
@@ -2559,9 +2919,80 @@ function NewsletterModal({ savedArts, onClose }) {
   const selectAll   = () => setSelected(new Set(savedArts.map(a => a.key)));
   const selectNone  = () => setSelected(new Set());
 
+  useEffect(() => {
+    setArticleEdits(prev => {
+      const next = { ...prev };
+      for (const art of savedArts) {
+        next[art.key] = next[art.key] ? { ...next[art.key], ...art } : { ...art };
+      }
+      return next;
+    });
+  }, [savedArts]);
+
+  useEffect(() => {
+    const count = selected.size;
+    setFooter(prev => prev.startsWith('Forbes Daily · Newsletter interna ·') || prev.startsWith(newsletterTitle + ' · Newsletter interna ·')
+      ? `${newsletterTitle} · Newsletter interna · ${count} matéria${count !== 1 ? 's' : ''} selecionada${count !== 1 ? 's' : ''}`
+      : prev
+    );
+  }, [selected, newsletterTitle]);
+
   const selectedArts = useMemo(() =>
-    savedArts.filter(a => selected.has(a.key)),
-  [savedArts, selected]);
+    savedArts
+      .filter(a => selected.has(a.key))
+      .map(a => ({ ...a, ...(articleEdits[a.key] || {}) })),
+  [savedArts, selected, articleEdits]);
+
+  function updateArticle(key, field, value) {
+    setArticleEdits(prev => ({
+      ...prev,
+      [key]: {
+        ...(prev[key] || savedArts.find(art => art.key === key) || {}),
+        [field]: value,
+      },
+    }));
+  }
+
+  function downloadFile(filename, content, type) {
+    const blob = new Blob([content], { type });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = filename;
+    document.body.appendChild(anchor);
+    anchor.click();
+    document.body.removeChild(anchor);
+    URL.revokeObjectURL(url);
+  }
+
+  function exportMarkdown() {
+    if (selectedArts.length === 0) {
+      setError('Selecione pelo menos um artigo para exportar.');
+      return;
+    }
+    const markdown = generateNewsletterMarkdown(selectedArts, {
+      title: newsletterTitle,
+      subject,
+      intro,
+      footer,
+    });
+    const date = new Date().toISOString().slice(0, 10);
+    downloadFile(`forbes-daily-${date}.md`, markdown, 'text/markdown;charset=utf-8');
+  }
+
+  function exportHtml() {
+    if (selectedArts.length === 0) {
+      setError('Selecione pelo menos um artigo para exportar.');
+      return;
+    }
+    const htmlContent = generateNewsletterHtml(selectedArts, {
+      title: newsletterTitle,
+      intro,
+      footer,
+    });
+    const date = new Date().toISOString().slice(0, 10);
+    downloadFile(`forbes-daily-${date}.html`, htmlContent, 'text/html;charset=utf-8');
+  }
 
   async function copyHtmlToClipboard(htmlContent, plainText) {
     try {
@@ -2582,8 +3013,18 @@ function NewsletterModal({ savedArts, onClose }) {
     setError('');
     setSending(true);
 
-    const subject  = generateNewsletterSubject();
-    const body     = generateNewsletterHtml(selectedArts);
+    const finalSubject = subject.trim() || generateNewsletterSubject();
+    const body     = generateNewsletterHtml(selectedArts, {
+      title: newsletterTitle,
+      intro,
+      footer,
+    });
+    const markdownBody = generateNewsletterMarkdown(selectedArts, {
+      title: newsletterTitle,
+      subject: finalSubject,
+      intro,
+      footer,
+    });
     const plainTxt = selectedArts.map(a => `• ${a.title}\n  ${a.link}`).join('\n\n');
     const toAddr   = to.trim();
 
@@ -2591,29 +3032,29 @@ function NewsletterModal({ savedArts, onClose }) {
       // macOS Mail.app via native bridge (includes HTML body)
       if (window.__hasNativeEmail) {
         try {
-          await window.nativeEmail(toAddr, subject, body);
+          await window.nativeEmail(toAddr, finalSubject, body);
           setSent(true);
         } catch (e) { setError('Erro ao abrir Mail: ' + e.message); }
       } else {
         // Fallback: mailto + clipboard
-        await copyHtmlToClipboard(body, plainTxt);
-        window.open(`mailto:${encodeURIComponent(toAddr)}?subject=${encodeURIComponent(subject)}`, '_self');
+        await copyHtmlToClipboard(body, markdownBody);
+        window.open(`mailto:${encodeURIComponent(toAddr)}?subject=${encodeURIComponent(finalSubject)}`, '_self');
         setSent(true);
       }
     } else if (emailApp === 'gmail') {
       // Gmail rejects very long compose URLs. Send a compact body and keep the full newsletter in the clipboard.
-      await copyHtmlToClipboard(body, plainTxt);
-      const gmailBody = generateCompactEmailBody(selectedArts);
-      const gmailUrl = `https://mail.google.com/mail/?view=cm&fs=1&to=${encodeURIComponent(toAddr)}&su=${encodeURIComponent(subject)}&body=${encodeURIComponent(gmailBody)}`;
+      await copyHtmlToClipboard(body, markdownBody);
+      const gmailBody = generateCompactEmailBody(selectedArts, { title: newsletterTitle, intro, footer });
+      const gmailUrl = `https://mail.google.com/mail/?view=cm&fs=1&to=${encodeURIComponent(toAddr)}&su=${encodeURIComponent(finalSubject)}&body=${encodeURIComponent(gmailBody)}`;
       window.open(gmailUrl, '_blank');
       setSent(true);
     } else if (emailApp === 'outlook') {
       // Outlook web compose — include formatted body in URL + HTML in clipboard
-      await copyHtmlToClipboard(body, plainTxt);
-      const outlookBody = `Forbes Daily\n${new Date().toLocaleDateString('pt-BR', { weekday:'long', day:'2-digit', month:'long', year:'numeric' })}\n\nConfira os destaques selecionados para hoje:\n\n` +
+      await copyHtmlToClipboard(body, markdownBody);
+      const outlookBody = `${newsletterTitle}\n${new Date().toLocaleDateString('pt-BR', { weekday:'long', day:'2-digit', month:'long', year:'numeric' })}\n\n${intro}\n\n` +
         selectedArts.map((a, i) => `${i+1}. ${a.title}${a.description ? '\n   ' + a.description.slice(0,120) : ''}\n   ${a.source ? a.source + ' · ' : ''}${a.link}`).join('\n\n') +
-        `\n\n—\nForbes Daily · ${selectedArts.length} matéria${selectedArts.length !== 1 ? 's' : ''} selecionada${selectedArts.length !== 1 ? 's' : ''}`;
-      const outlookUrl = `https://outlook.office.com/mail/deeplink/compose?to=${encodeURIComponent(toAddr)}&subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(outlookBody)}`;
+        `\n\n—\n${footer}`;
+      const outlookUrl = `https://outlook.office.com/mail/deeplink/compose?to=${encodeURIComponent(toAddr)}&subject=${encodeURIComponent(finalSubject)}&body=${encodeURIComponent(outlookBody)}`;
       window.open(outlookUrl, '_blank');
       setSent(true);
     }
@@ -2661,8 +3102,8 @@ function NewsletterModal({ savedArts, onClose }) {
           <!-- From -->
           <div>
             <label class="block text-xs font-medium text-gray-500 mb-1">De</label>
-            <input type="text" value="am@forbes.com.br" disabled
-              class="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg text-sm text-gray-500" />
+            <input type="text" value=${from} onInput=${e => setFrom(e.target.value)}
+              class="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
           </div>
 
           <!-- To -->
@@ -2694,9 +3135,27 @@ function NewsletterModal({ savedArts, onClose }) {
 
           <!-- Subject preview -->
           <div>
+            <label class="block text-xs font-medium text-gray-500 mb-1">Nome da newsletter</label>
+            <input type="text" value=${newsletterTitle} onInput=${e => setNewsletterTitle(e.target.value)}
+              class="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+          </div>
+
+          <div>
             <label class="block text-xs font-medium text-gray-500 mb-1">Assunto</label>
-            <input type="text" value=${generateNewsletterSubject()} disabled
-              class="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg text-sm text-gray-500" />
+            <input type="text" value=${subject} onInput=${e => setSubject(e.target.value)}
+              class="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+          </div>
+
+          <div>
+            <label class="block text-xs font-medium text-gray-500 mb-1">Abre / introdução</label>
+            <textarea value=${intro} onInput=${e => setIntro(e.target.value)} rows="3"
+              class="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 resize-y"></textarea>
+          </div>
+
+          <div>
+            <label class="block text-xs font-medium text-gray-500 mb-1">Rodapé</label>
+            <input type="text" value=${footer} onInput=${e => setFooter(e.target.value)}
+              class="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
           </div>
 
           <!-- Article selection -->
@@ -2721,11 +3180,53 @@ function NewsletterModal({ savedArts, onClose }) {
             </div>
           </div>
 
+          ${selectedArts.length > 0 && html`
+            <div>
+              <label class="block text-xs font-medium text-gray-500 mb-2">Edição manual dos itens selecionados</label>
+              <div class="space-y-3">
+                ${selectedArts.map(art => html`
+                  <div key=${art.key} class="border border-gray-200 rounded-xl p-3 space-y-2">
+                    <div class="grid grid-cols-1 gap-2">
+                      <div>
+                        <label class="block text-[11px] font-medium text-gray-400 mb-1">Título</label>
+                        <input type="text" value=${art.title || ''} onInput=${e => updateArticle(art.key, 'title', e.target.value)}
+                          class="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                      </div>
+                      <div>
+                        <label class="block text-[11px] font-medium text-gray-400 mb-1">Resumo</label>
+                        <textarea rows="3" value=${art.description || ''} onInput=${e => updateArticle(art.key, 'description', e.target.value)}
+                          class="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 resize-y"></textarea>
+                      </div>
+                      <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                        <div>
+                          <label class="block text-[11px] font-medium text-gray-400 mb-1">Fonte</label>
+                          <input type="text" value=${art.source || ''} onInput=${e => updateArticle(art.key, 'source', e.target.value)}
+                            class="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                        </div>
+                        <div>
+                          <label class="block text-[11px] font-medium text-gray-400 mb-1">Link original</label>
+                          <input type="text" value=${art.link || ''} onInput=${e => updateArticle(art.key, 'link', e.target.value)}
+                            class="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                        </div>
+                      </div>
+                    </div>
+                  </div>`)}
+              </div>
+            </div>`}
+
           ${error && html`<p class="text-sm text-red-500">${error}</p>`}
         </div>
 
         <!-- Footer -->
-        <div class="px-5 py-4 border-t border-gray-100 flex justify-end gap-2">
+        <div class="px-5 py-4 border-t border-gray-100 flex flex-wrap justify-end gap-2">
+          <button onClick=${exportHtml}
+            class="px-4 py-2 text-sm text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors">
+            Exportar HTML
+          </button>
+          <button onClick=${exportMarkdown}
+            class="px-4 py-2 text-sm text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors">
+            Exportar Markdown
+          </button>
           <button onClick=${onClose}
             class="px-4 py-2 text-sm text-gray-600 hover:bg-gray-100 rounded-lg transition-colors">
             Cancelar
@@ -3420,11 +3921,12 @@ function App() {
         <main class="flex-1 min-w-0">
 
           <!-- Tabs -->
-          <div class="flex gap-1 mb-4 bg-white rounded-xl border border-gray-200 p-1 w-fit">
-            ${[['articles','Artigos'],['websearch','Busca Web'],['trends','Tendências'],['saved','Salvos'],['settings','Configurações'],['suggestions','Sugestões']].map(([t,l]) => html`
+          <div class="flex gap-1 mb-4 bg-white rounded-xl border border-gray-200 p-1 w-full overflow-x-auto">
+            ${[['articles','Artigos'],['websearch','Busca Web'],['editorial','Art Check'],['trends','Tendências'],['saved','Salvos'],['settings','Configurações'],['suggestions','Sugestões']].map(([t,l]) => html`
               <button key=${t} onClick=${() => setTab(t)}
-                class="px-4 py-1.5 rounded-lg text-sm font-medium transition-colors flex items-center gap-1.5 ${tab===t ? 'bg-blue-600 text-white shadow-sm' : 'text-gray-600 hover:text-gray-900'}">
+                class="px-4 py-1.5 rounded-lg text-sm font-medium transition-colors flex items-center gap-1.5 whitespace-nowrap ${tab===t ? 'bg-blue-600 text-white shadow-sm' : 'text-gray-600 hover:text-gray-900'}">
                 ${t==='websearch' ? html`${Ico.globe()}<span>${l}</span>`
+                  : t==='editorial' ? html`${Ico.bulb()}<span>${l}</span>`
                   : t==='trends' ? html`${Ico.trend()}<span>${l}</span>`
                   : t==='saved' ? html`${Ico.mark(false)}<span>${l}</span>`
                   : t==='settings' ? html`<span>${l}</span>`
@@ -3560,6 +4062,9 @@ function App() {
             onRemove=${removeFromSaved}
             onNewsletter=${() => setShowNewsletter(true)}
           />`}
+
+          <!-- ── EDITORIAL TAB ── -->
+          ${tab === 'editorial' && html`<${EditorialCheckTab}/>`}
 
           <!-- ── TENDÊNCIAS TAB ── -->
           ${tab === 'trends' && html`<${TrendsTab}/>`}
